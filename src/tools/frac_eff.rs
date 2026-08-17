@@ -77,7 +77,7 @@ fn plot_data(
     let x_max = size.iter().cloned().fold(f64::MIN, f64::max);
 
     let mut chart = ChartBuilder::on(&root)
-        .caption("Фракционная эффективность", ("sans-serif", 30))
+        .caption("Fractional Efficiency", ("sans-serif", 30))
         .margin(20)
         .x_label_area_size(40)
         .y_label_area_size(50)
@@ -85,8 +85,8 @@ fn plot_data(
 
     chart
         .configure_mesh()
-        .x_desc("Размер частиц")
-        .y_desc("Эффективность, %")
+        .x_desc("Particle Size")
+        .y_desc("Efficiency, %")
         .draw()?;
 
     chart.draw_series(LineSeries::new(
