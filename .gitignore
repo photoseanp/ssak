@@ -1,0 +1,10 @@
+/target
+ssak_config.json
+*.png
+.DS_Store
+Thumbs.db
+*.exe
+*.pdb
+.vscode/
+.idea/
+*.iml
