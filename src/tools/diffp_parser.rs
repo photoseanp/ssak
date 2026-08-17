@@ -79,13 +79,13 @@ fn plot_data(
     let y_min = pressure.iter().cloned().fold(f64::MAX, f64::min);
 
     let mut chart = ChartBuilder::on(&root)
-        .caption("Дифференциальное давление", ("sans-serif", 30))
+        .caption("Differential Pressure", ("sans-serif", 30))
         .margin(20)
         .x_label_area_size(40)
         .y_label_area_size(50)
         .build_cartesian_2d(0f64..x_max, y_min..y_max)?;
 
-    chart.configure_mesh().x_desc("Время").y_desc("Давление").draw()?;
+    chart.configure_mesh().x_desc("Time").y_desc("Pressure").draw()?;
 
     chart.draw_series(LineSeries::new(
         time.iter().zip(pressure.iter()).map(|(x, y)| (*x, *y)),
