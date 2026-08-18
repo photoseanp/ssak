@@ -2,15 +2,10 @@ use crate::config::AppConfig;
 use dialoguer::Input;
 
 fn read_number(prompt: &str) -> Option<f64> {
-    let input: String = Input::new()
-        .with_prompt(prompt)
-        .interact_text()
-        .unwrap_or_default();
-
+    let input: String = Input::new().with_prompt(prompt).interact_text().unwrap_or_default();
     if input.trim().eq_ignore_ascii_case("q") {
         return None;
     }
-
     match input.trim().replace(',', ".").parse::<f64>() {
         Ok(v) => Some(v),
         Err(_) => {
@@ -20,24 +15,83 @@ fn read_number(prompt: &str) -> Option<f64> {
     }
 }
 
-fn read_number_with_default(prompt: &str, default: f64) -> Option<f64> {
-    let input: String = Input::new()
-        .with_prompt(prompt)
-        .default(default.to_string())
-        .interact_text()
-        .unwrap_or_else(|_| default.to_string());
-
-    if input.trim().eq_ignore_ascii_case("q") {
-        return None;
-    }
-
-    match input.trim().replace(',', ".").parse::<f64>() {
-        Ok(v) => Some(v),
-        Err(_) => {
-            println!("Некорректное число. Используется значение по умолчанию.");
-            Some(default)
+fn read_count(prompt: &str, min: usize) -> Option<usize> {
+    loop {
+        let input: String = Input::new().with_prompt(prompt).interact_text().unwrap_or_default();
+        if input.trim().eq_ignore_ascii_case("q") {
+            return None;
+        }
+        match input.trim().parse::<usize>() {
+            Ok(v) if v >= min => return Some(v),
+            Ok(_) => println!("Нужно ввести число не меньше {}.", min),
+            Err(_) => println!("Некорректное число. Повторите попытку."),
         }
     }
+}
+
+fn t_critical_95(df: usize) -> f64 {
+    match df {
+        1 => 12.706, 2 => 4.303, 3 => 3.182, 4 => 2.776, 5 => 2.571,
+        6 => 2.447, 7 => 2.365, 8 => 2.306, 9 => 2.262, 10 => 2.228,
+        11 => 2.201, 12 => 2.179, 13 => 2.160, 14 => 2.145, 15 => 2.131,
+        16 => 2.120, 17 => 2.110, 18 => 2.101, 19 => 2.093, 20 => 2.086,
+        21 => 2.080, 22 => 2.074, 23 => 2.069, 24 => 2.064, 25 => 2.060,
+        26 => 2.056, 27 => 2.052, 28 => 2.048, 29 => 2.045, 30 => 2.042,
+        _ => 1.960,
+    }
+}
+
+struct LinearFit {
+    slope: f64,
+    intercept: f64,
+    r2: f64,
+    se: f64,
+    x_mean: f64,
+    sxx: f64,
+    n: usize,
+}
+
+fn fit_linear(x: &[f64], y: &[f64]) -> LinearFit {
+    let n = x.len();
+    let x_mean = x.iter().sum::<f64>() / n as f64;
+    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let sxx: f64 = x.iter().map(|xi| (xi - x_mean).powi(2)).sum();
+    let sxy: f64 = x.iter().zip(y.iter()).map(|(xi, yi)| (xi - x_mean) * (yi - y_mean)).sum();
+    let syy: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
+    let slope = sxy / sxx;
+    let intercept = y_mean - slope * x_mean;
+    let sse: f64 = x
+        .iter()
+        .zip(y.iter())
+        .map(|(xi, yi)| {
+            let pred = slope * xi + intercept;
+            (yi - pred).powi(2)
+        })
+        .sum();
+    let dof = n - 2;
+    let se = (sse / dof as f64).sqrt();
+    let r2 = if syy > 0.0 { 1.0 - sse / syy } else { 0.0 };
+    LinearFit { slope, intercept, r2, se, x_mean, sxx, n }
+}
+
+fn predict_with_ci(fit: &LinearFit, x0: f64) -> (f64, f64, f64) {
+    let y0 = fit.slope * x0 + fit.intercept;
+    let se_pred = fit.se * (1.0 + 1.0 / fit.n as f64 + (x0 - fit.x_mean).powi(2) / fit.sxx).sqrt();
+    let t = t_critical_95(fit.n - 2);
+    let half = t * se_pred;
+    (y0, y0 - half, y0 + half)
+}
+
+fn fit_power(x: &[f64], y: &[f64]) -> LinearFit {
+    let ln_x: Vec<f64> = x.iter().map(|v| v.ln()).collect();
+    let ln_y: Vec<f64> = y.iter().map(|v| v.ln()).collect();
+    fit_linear(&ln_x, &ln_y)
+}
+
+fn predict_power_with_ci(fit: &LinearFit, x0: f64) -> (f64, f64, f64) {
+    let ln_x0 = x0.ln();
+    let (y0_log, lo_log, hi_log) = predict_with_ci(fit, ln_x0);
+    (y0_log.exp(), lo_log.exp(), hi_log.exp())
 }
 
 pub fn run(_config: &AppConfig) {
@@ -45,49 +99,88 @@ pub fn run(_config: &AppConfig) {
     println!("-----------------------------------------");
     println!("(введите q, чтобы отменить и вернуться в главное меню)");
 
-    let flow = match read_number("Введите расход воздуха (л/мин)") {
+    let area = match read_number("Введите площадь фильтроповерхности (м2)") {
         Some(v) => v,
         None => {
             println!("Отменено. Возврат в главное меню.");
             return;
         }
     };
-
-    let area = match read_number("Введите площадь фильтра (см2)") {
-        Some(v) => v,
-        None => {
-            println!("Отменено. Возврат в главное меню.");
-            return;
-        }
-    };
-
-    let pressure = match read_number("Введите перепад давления (мбар)") {
-        Some(v) => v,
-        None => {
-            println!("Отменено. Возврат в главное меню.");
-            return;
-        }
-    };
-
-    let n = match read_number_with_default("Введите показатель степени n (по умолчанию 0.5)", 0.5) {
-        Some(v) => v,
-        None => {
-            println!("Отменено. Возврат в главное меню.");
-            return;
-        }
-    };
-
-    if area <= 0.0 || pressure <= 0.0 {
-        println!("Площадь и давление должны быть больше нуля.");
+    if area <= 0.0 {
+        println!("Площадь должна быть больше нуля.");
         return;
     }
 
-    let permeability = flow / (area * pressure.powf(n));
+    let n = match read_count("Введите количество точек эксперимента (минимум 3)", 3) {
+        Some(v) => v,
+        None => {
+            println!("Отменено. Возврат в главное меню.");
+            return;
+        }
+    };
+
+    let mut pressures: Vec<f64> = Vec::with_capacity(n);
+    let mut flows: Vec<f64> = Vec::with_capacity(n);
+
+    for i in 1..=n {
+        println!();
+        println!("Точка {} из {}", i, n);
+        let flow = match read_number(&format!("  Установленный расход (л/мин) для точки {}", i)) {
+            Some(v) => v,
+            None => {
+                println!("Отменено. Возврат в главное меню.");
+                return;
+            }
+        };
+        let pressure = match read_number(&format!(
+            "  Перепад давления на фильтроэлементе (Па) для точки {}",
+            i
+        )) {
+            Some(v) => v,
+            None => {
+                println!("Отменено. Возврат в главное меню.");
+                return;
+            }
+        };
+        if flow <= 0.0 || pressure <= 0.0 {
+            println!("Расход и давление должны быть больше нуля.");
+            return;
+        }
+        flows.push(flow);
+        pressures.push(pressure);
+    }
+
+    let specific_flow: Vec<f64> = flows.iter().map(|f| f / area).collect();
+    let fit = fit_power(&pressures, &specific_flow);
+    let k = fit.intercept.exp();
+    let exponent = fit.slope;
 
     println!();
-    println!("Расход воздуха: {:.4} л/мин", flow);
-    println!("Площадь: {:.4} см2", area);
-    println!("Перепад давления: {:.4} мбар", pressure);
-    println!("Показатель степени: {:.4}", n);
-    println!("Коэффициент воздухопроницаемости: {:.6}", permeability);
+    println!("Введённые точки:");
+    println!("{:>6} | {:>16} | {:>18}", "№", "Давление (Па)", "Расход (л/мин)");
+    for i in 0..n {
+        println!("{:>6} | {:>16.2} | {:>18.4}", i + 1, pressures[i], flows[i]);
+    }
+
+    println!();
+    println!("Регрессия: удельный расход = k * ΔP^n");
+    println!("k = {:.6}, n = {:.4}", k, exponent);
+    println!("R2 = {:.4}", fit.r2);
+
+    println!();
+    println!("Прогноз расхода с 95% доверительным интервалом:");
+    println!(
+        "{:>10} | {:>16} | {:>16} | {:>16}",
+        "ΔP (Па)", "Расход (л/мин)", "Нижняя граница", "Верхняя граница"
+    );
+    for &target in &[200.0_f64, 125.0_f64] {
+        let (y0, lo, hi) = predict_power_with_ci(&fit, target);
+        println!(
+            "{:>10.1} | {:>16.4} | {:>16.4} | {:>16.4}",
+            target,
+            y0 * area,
+            lo * area,
+            hi * area
+        );
+    }
 }
