@@ -49,9 +49,12 @@ fn main() {
         }
 
         println!();
-        println!("Нажмите Enter для возврата в меню...");
+        println!("Нажмите Enter для возврата в меню (или введите q для выхода из программы)...");
         let mut buf = String::new();
         let _ = std::io::stdin().read_line(&mut buf);
+        if buf.trim().eq_ignore_ascii_case("q") {
+            break;
+        }
     }
 
     println!("Работа программы завершена.");
