@@ -1,19 +1,62 @@
 use crate::config::AppConfig;
-use dialoguer::Input;
+use dialoguer::Select;
 use plotters::prelude::*;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+
+fn select_input_file(config: &AppConfig) -> Option<PathBuf> {
+    let dir = Path::new(&config.input_dir);
+
+    if !dir.exists() || !dir.is_dir() {
+        println!("Папка с исходными данными не найдена: {}", dir.display());
+        println!("Проверьте путь в меню \"Настройка папок\".");
+        return None;
+    }
+
+    let mut files: Vec<String> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect(),
+        Err(e) => {
+            println!("Не удалось открыть папку {}: {}", dir.display(), e);
+            return None;
+        }
+    };
+
+    if files.is_empty() {
+        println!("В папке с исходными данными не найдено файлов: {}", dir.display());
+        return None;
+    }
+
+    files.sort();
+    files.push("[Отмена — назад в меню]".to_string());
+
+    let selection = Select::new()
+        .with_prompt("Выберите файл с данными")
+        .items(&files)
+        .default(0)
+        .interact()
+        .ok()?;
+
+    if selection == files.len() - 1 {
+        println!("Отменено. Возврат в главное меню.");
+        return None;
+    }
+
+    Some(dir.join(&files[selection]))
+}
 
 pub fn run(config: &AppConfig) {
     println!("Парсер дифференциального давления");
     println!("------------------------------------");
 
-    let filename: String = Input::new()
-        .with_prompt("Введите имя файла с данными (в папке с исходными данными)")
-        .interact_text()
-        .unwrap_or_default();
-
-    let input_path = config.input_path(&filename);
+    let input_path = match select_input_file(config) {
+        Some(p) => p,
+        None => return,
+    };
 
     let file = match File::open(&input_path) {
         Ok(f) => f,
