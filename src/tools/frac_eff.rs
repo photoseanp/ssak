@@ -1,11 +1,10 @@
 use crate::config::AppConfig;
-use dialoguer::Select;
+use dialoguer::{Input, MultiSelect};
 use plotters::prelude::*;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::fs;
 use std::path::{Path, PathBuf};
 
-fn select_input_file(config: &AppConfig) -> Option<PathBuf> {
+fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
     let dir = Path::new(&config.input_dir);
 
     if !dir.exists() || !dir.is_dir() {
@@ -32,65 +31,150 @@ fn select_input_file(config: &AppConfig) -> Option<PathBuf> {
     }
 
     files.sort();
-    files.push("[Отмена — назад в меню]".to_string());
 
-    let selection = Select::new()
-        .with_prompt("Выберите файл с данными")
+    let selections = MultiSelect::new()
+        .with_prompt("Выберите один или несколько файлов (Space — выбрать, Enter — подтвердить)")
         .items(&files)
-        .default(0)
         .interact()
         .ok()?;
 
-    if selection == files.len() - 1 {
-        println!("Отменено. Возврат в главное меню.");
+    if selections.is_empty() {
+        println!("Файлы не выбраны. Возврат в главное меню.");
         return None;
     }
 
-    Some(dir.join(&files[selection]))
+    Some(selections.into_iter().map(|i| dir.join(&files[i])).collect())
+}
+
+fn read_text_or_default(prompt: &str, default: &str) -> Option<String> {
+    let input: String = Input::new()
+        .with_prompt(prompt)
+        .default(default.to_string())
+        .interact_text()
+        .unwrap_or_else(|_| default.to_string());
+
+    if input.trim().eq_ignore_ascii_case("q") {
+        None
+    } else {
+        Some(input)
+    }
+}
+
+fn find_col(fields: &[&str], target: &str) -> Option<usize> {
+    fields.iter().position(|f| {
+        let t = f.trim();
+        if let Some(rest) = t.strip_prefix(target) {
+            rest.starts_with(' ') || rest.starts_with('[')
+        } else {
+            false
+        }
+    })
+}
+
+fn parse_frac_eff_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
+    let content = fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut size_idx: Option<usize> = None;
+    let mut eff_idx: Option<usize> = None;
+    let mut header_line: Option<usize> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let si = find_col(&fields, "X");
+        let ei = find_col(&fields, "E");
+        if let (Some(si), Some(ei)) = (si, ei) {
+            size_idx = Some(si);
+            eff_idx = Some(ei);
+            header_line = Some(i);
+            break;
+        }
+    }
+
+    let (si, ei, hl) = match (size_idx, eff_idx, header_line) {
+        (Some(a), Some(b), Some(h)) => (a, b, h),
+        _ => return None,
+    };
+
+    let mut sizes = Vec::new();
+    let mut effs = Vec::new();
+
+    for line in lines.iter().skip(hl + 1) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() <= si.max(ei) {
+            continue;
+        }
+        let size_val = fields[si].trim().replace(',', ".").parse::<f64>();
+        let eff_val = fields[ei].trim().replace(',', ".").parse::<f64>();
+        if let (Ok(s), Ok(e)) = (size_val, eff_val) {
+            sizes.push(s);
+            effs.push(e);
+        }
+    }
+
+    if sizes.len() < 2 {
+        return None;
+    }
+    Some((sizes, effs))
 }
 
 pub fn run(config: &AppConfig) {
     println!("Сравнение фракционной эффективности");
     println!("--------------------------------------");
 
-    let input_path = match select_input_file(config) {
+    let paths = match select_input_files(config) {
         Some(p) => p,
         None => return,
     };
 
-    let file = match File::open(&input_path) {
-        Ok(f) => f,
-        Err(e) => {
-            println!("Не удалось открыть файл {}: {}", input_path.display(), e);
-            return;
-        }
-    };
+    let mut series: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::new();
 
-    let reader = BufReader::new(file);
-    let mut size_data: Vec<f64> = Vec::new();
-    let mut efficiency_data: Vec<f64> = Vec::new();
-
-    for (i, line) in reader.lines().enumerate() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        if i == 0 {
-            continue;
-        }
-        let parts: Vec<&str> = line.split(&[',', ';', '\t'][..]).collect();
-        if parts.len() < 2 {
-            continue;
-        }
-        if let (Ok(s), Ok(e)) = (parts[0].trim().parse::<f64>(), parts[1].trim().parse::<f64>()) {
-            size_data.push(s);
-            efficiency_data.push(e);
+    for path in &paths {
+        match parse_frac_eff_file(path) {
+            Some((sizes, effs)) => {
+                let default_label = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Series".to_string());
+                let prompt = format!(
+                    "Название для легенды (файл: {})",
+                    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                );
+                let label = match read_text_or_default(&prompt, &default_label) {
+                    Some(v) => v,
+                    None => {
+                        println!("Отменено. Возврат в главное меню.");
+                        return;
+                    }
+                };
+                series.push((label, sizes, effs));
+            }
+            None => {
+                println!(
+                    "Не удалось найти данные фракционной эффективности в файле {} — файл пропущен.",
+                    path.display()
+                );
+            }
         }
     }
 
-    if size_data.is_empty() {
-        println!("Не удалось извлечь данные из файла.");
+    if series.is_empty() {
+        println!("Не удалось обработать ни один из выбранных файлов.");
         return;
+    }
+
+    let mut output_name = match read_text_or_default(
+        "Введите имя файла для сохранения графика (PNG)",
+        "frac_eff_result.png",
+    ) {
+        Some(v) => v,
+        None => {
+            println!("Отменено. Возврат в главное меню.");
+            return;
+        }
+    };
+    if !output_name.to_lowercase().ends_with(".png") {
+        output_name.push_str(".png");
     }
 
     if let Err(e) = config.ensure_output_dir() {
@@ -98,33 +182,41 @@ pub fn run(config: &AppConfig) {
         return;
     }
 
-    let output_path = config.output_path("frac_eff_result.png");
-    if let Err(e) = plot_data(&size_data, &efficiency_data, &output_path) {
+    let output_path = config.output_path(&output_name);
+    if let Err(e) = plot_data(&series, &output_path) {
         println!("Ошибка построения графика: {}", e);
         return;
     }
 
     println!();
-    println!("Обработано точек: {}", size_data.len());
+    println!("Обработано файлов: {}", series.len());
     println!("График сохранён: {}", output_path.display());
 }
 
 fn plot_data(
-    size: &[f64],
-    efficiency: &[f64],
-    output_path: &std::path::Path,
+    series: &[(String, Vec<f64>, Vec<f64>)],
+    output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = BitMapBackend::new(output_path, (1000, 600)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    let x_max = size.iter().cloned().fold(f64::MIN, f64::max);
+    let x_max = series
+        .iter()
+        .flat_map(|(_, s, _)| s.iter())
+        .cloned()
+        .fold(f64::MIN, f64::max);
+    let x_min = series
+        .iter()
+        .flat_map(|(_, s, _)| s.iter())
+        .cloned()
+        .fold(f64::MAX, f64::min);
 
     let mut chart = ChartBuilder::on(&root)
         .caption("Fractional Efficiency", ("sans-serif", 30))
         .margin(20)
         .x_label_area_size(40)
         .y_label_area_size(50)
-        .build_cartesian_2d(0f64..x_max, 0f64..100f64)?;
+        .build_cartesian_2d(x_min..x_max, 0f64..100f64)?;
 
     chart
         .configure_mesh()
@@ -132,10 +224,24 @@ fn plot_data(
         .y_desc("Efficiency, %")
         .draw()?;
 
-    chart.draw_series(LineSeries::new(
-        size.iter().zip(efficiency.iter()).map(|(x, y)| (*x, *y)),
-        &BLUE,
-    ))?;
+    let palette: [&RGBColor; 6] = [&RED, &BLUE, &GREEN, &MAGENTA, &CYAN, &BLACK];
+
+    for (i, (label, sizes, effs)) in series.iter().enumerate() {
+        let color = palette[i % palette.len()];
+        chart
+            .draw_series(LineSeries::new(
+                sizes.iter().zip(effs.iter()).map(|(x, y)| (*x, *y)),
+                color,
+            ))?
+            .label(label.clone())
+            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+    }
+
+    chart
+        .configure_series_labels()
+        .background_style(&WHITE.mix(0.8))
+        .border_style(&BLACK)
+        .draw()?;
 
     root.present()?;
     Ok(())
