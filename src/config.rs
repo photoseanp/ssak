@@ -49,28 +49,87 @@ impl AppConfig {
     }
 }
 
+/// Считывает строку с клавиатуры. Возвращает None, если введено "q" —
+/// это сигнал отмены и возврата в главное меню.
+pub fn read_or_quit(prompt: &str, default: &str) -> Option<String> {
+    let value: String = dialoguer::Input::new()
+        .with_prompt(prompt)
+        .default(default.to_string())
+        .interact_text()
+        .unwrap_or_else(|_| default.to_string());
+
+    if value.trim().eq_ignore_ascii_case("q") {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 pub fn configure_paths(config: &mut AppConfig) {
     println!("Текущая папка с исходными данными: {}", config.input_dir);
     println!("Текущая папка для результатов: {}", config.output_dir);
     println!();
+    println!("(Введите q в любом поле, чтобы отменить и вернуться в главное меню)");
+    println!();
 
-    let input: String = dialoguer::Input::new()
-        .with_prompt("Введите новую папку с исходными данными (Enter — оставить без изменений)")
-        .default(config.input_dir.clone())
-        .interact_text()
-        .unwrap_or_else(|_| config.input_dir.clone());
+    let input = match read_or_quit(
+        "Введите новую папку с исходными данными",
+        &config.input_dir,
+    ) {
+        Some(v) => v,
+        None => {
+            println!("Отменено. Возврат в главное меню.");
+            return;
+        }
+    };
 
-    let output: String = dialoguer::Input::new()
-        .with_prompt("Введите новую папку для результатов (Enter — оставить без изменений)")
-        .default(config.output_dir.clone())
-        .interact_text()
-        .unwrap_or_else(|_| config.output_dir.clone());
+    let input_path = Path::new(&input);
+    if input_path.exists() && input_path.is_dir() {
+        println!("Папка найдена: {}", input_path.display());
+        config.input_dir = input;
+    } else {
+        println!(
+            "Папка не найдена: {}. Папка с исходными данными не изменена.",
+            input
+        );
+    }
 
-    config.input_dir = input;
-    config.output_dir = output;
+    let output = match read_or_quit(
+        "Введите новую папку для результатов",
+        &config.output_dir,
+    ) {
+        Some(v) => v,
+        None => {
+            println!("Отменено. Возврат в главное меню.");
+            if let Err(e) = config.save() {
+                println!("Ошибка сохранения настроек: {}", e);
+            }
+            return;
+        }
+    };
 
-    if let Err(e) = config.ensure_output_dir() {
-        println!("Не удалось создать папку для результатов: {}", e);
+    let output_path = Path::new(&output);
+    if output_path.exists() && output_path.is_dir() {
+        println!("Папка найдена: {}", output_path.display());
+        config.output_dir = output;
+    } else {
+        let create = dialoguer::Confirm::new()
+            .with_prompt(format!("Папка '{}' не найдена. Создать её?", output))
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+
+        if create {
+            match fs::create_dir_all(&output) {
+                Ok(_) => {
+                    println!("Папка создана: {}", output);
+                    config.output_dir = output;
+                }
+                Err(e) => println!("Не удалось создать папку: {}", e),
+            }
+        } else {
+            println!("Папка для результатов не изменена.");
+        }
     }
 
     match config.save() {
