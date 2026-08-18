@@ -7,11 +7,25 @@ const K: f64 = 4.0;
 pub fn run(_config: &AppConfig) {
     println!("Расчёт размера пор по методу точки пузырька");
     println!("--------------------------------------------");
+    println!("(введите q, чтобы отменить и вернуться в главное меню)");
 
-    let pressure: f64 = Input::new()
+    let input: String = Input::new()
         .with_prompt("Введите давление точки пузырька (бар)")
         .interact_text()
-        .unwrap_or(0.0);
+        .unwrap_or_default();
+
+    if input.trim().eq_ignore_ascii_case("q") {
+        println!("Отменено. Возврат в главное меню.");
+        return;
+    }
+
+    let pressure: f64 = match input.trim().replace(',', ".").parse() {
+        Ok(v) => v,
+        Err(_) => {
+            println!("Некорректное число. Повторите попытку.");
+            return;
+        }
+    };
 
     if pressure <= 0.0 {
         println!("Давление должно быть больше нуля.");
