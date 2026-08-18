@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::text_io::read_text_lossy;
 use dialoguer::{Input, Select};
 use plotters::prelude::*;
 use std::fs;
@@ -63,7 +64,7 @@ fn read_text_or_default(prompt: &str, default: &str) -> Option<String> {
 }
 
 fn parse_diffp_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
-    let content = fs::read_to_string(path).ok()?;
+    let content = read_text_lossy(path)?;
     let lines: Vec<&str> = content.lines().collect();
 
     let mut flow_idx: Option<usize> = None;

@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::text_io::read_text_lossy;
 use dialoguer::{Input, MultiSelect};
 use plotters::prelude::*;
 use std::fs;
@@ -40,7 +41,7 @@ fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
 
     if selections.is_empty() {
         println!("Файлы не выбраны. Возврат в главное меню.");
-        return None;
+            return None;
     }
 
     Some(selections.into_iter().map(|i| dir.join(&files[i])).collect())
@@ -72,7 +73,7 @@ fn find_col(fields: &[&str], target: &str) -> Option<usize> {
 }
 
 fn parse_frac_eff_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
-    let content = fs::read_to_string(path).ok()?;
+    let content = read_text_lossy(path)?;
     let lines: Vec<&str> = content.lines().collect();
 
     let mut size_idx: Option<usize> = None;

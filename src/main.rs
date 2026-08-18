@@ -1,4 +1,5 @@
 mod config;
+mod text_io;
 mod tools;
 
 use config::AppConfig;
@@ -49,12 +50,9 @@ fn main() {
         }
 
         println!();
-        println!("Нажмите Enter для возврата в меню (или введите q для выхода из программы)...");
+        println!("Нажмите Enter для возврата в меню...");
         let mut buf = String::new();
         let _ = std::io::stdin().read_line(&mut buf);
-        if buf.trim().eq_ignore_ascii_case("q") {
-            break;
-        }
     }
 
     println!("Работа программы завершена.");
