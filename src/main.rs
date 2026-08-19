@@ -6,6 +6,14 @@ use config::AppConfig;
 use dialoguer::Select;
 
 fn main() {
+    if let Err(e) = plotters::style::register_font(
+        "sans-serif",
+        plotters::style::FontStyle::Normal,
+        dejavu::sans::regular(),
+    ) {
+        eprintln!("Предупреждение: не удалось зарегистрировать встроенный шрифт: {:?}", e);
+    }
+
     let mut config = AppConfig::load();
 
     let items = vec![

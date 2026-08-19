@@ -117,6 +117,32 @@ fn parse_diffp_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
     Some((flows, pressures))
 }
 
+/// Линейная регрессия методом наименьших квадратов: y = slope*x + intercept.
+fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
+    let n = x.len() as f64;
+    let sum_x: f64 = x.iter().sum();
+    let sum_y: f64 = y.iter().sum();
+    let sum_xy: f64 = x.iter().zip(y).map(|(a, b)| a * b).sum();
+    let sum_xx: f64 = x.iter().map(|a| a * a).sum();
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() < f64::EPSILON {
+        return (0.0, sum_y / n);
+    }
+    let slope = (n * sum_xy - sum_x * sum_y) / denom;
+    let intercept = (sum_y - slope * sum_x) / n;
+    (slope, intercept)
+}
+
+/// Перевод нормальных л/мин -> фм3/(м2*ч) с учётом температуры, абс. давления
+/// в контуре и площади фильтроэлемента (порт из diffP_parser.py).
+/// Нормальные условия: T_std = 0°C (273.15 K), P_std = 1.01325 бар.
+fn conv_factor_nlmin_to_fm3m2h(temp_c: f64, p_abs_bar: f64, area_m2: f64) -> f64 {
+    const T_STD: f64 = 273.15;
+    const P_STD: f64 = 1.01325;
+    let t_act = temp_c + 273.15;
+    0.06 * (P_STD / p_abs_bar) * (t_act / T_STD) / area_m2
+}
+
 pub fn run(config: &AppConfig) {
     println!("Парсер дифференциального давления");
     println!("------------------------------------");
@@ -153,9 +179,33 @@ pub fn run(config: &AppConfig) {
         }
     };
 
+    println!();
+    println!("Для верхней оси X в фм3/(м2*ч) укажите условия испытания:");
+    let p_abs_bar: f64 = Input::new()
+        .with_prompt("Давление в контуре (бар, абс.)")
+        .default(1.01325)
+        .interact_text()
+        .unwrap_or(1.01325);
+
+    let temp_c: f64 = Input::new()
+        .with_prompt("температура в контуре (°C)")
+        .default(20.0)
+        .interact_text()
+        .unwrap_or(20.0);
+
+    let area_m2: f64 = Input::new()
+        .with_prompt("площадь фильтроэлемента (м2)")
+        .interact_text()
+        .unwrap_or(0.0);
+
+    if p_abs_bar <= 0.0 || area_m2 <= 0.0 {
+        println!("Давление и площадь должны быть больше нуля. Отменено.");
+        return;
+    }
+
     let mut output_name = match read_text_or_default(
-        "Введите имя файла для сохранения графика (SVG)",
-        "diffp_result.svg",
+        "Введите имя файла для сохранения графика (PNG)",
+        "diffp_result.png",
     ) {
         Some(v) => v,
         None => {
@@ -163,8 +213,8 @@ pub fn run(config: &AppConfig) {
             return;
         }
     };
-    if !output_name.to_lowercase().ends_with(".svg") {
-        output_name.push_str(".svg");
+    if !output_name.to_lowercase().ends_with(".png") {
+        output_name.push_str(".png");
     }
 
     if let Err(e) = config.ensure_output_dir() {
@@ -173,7 +223,7 @@ pub fn run(config: &AppConfig) {
     }
 
     let output_path = config.output_path(&output_name);
-    if let Err(e) = plot_data(&flows, &pressures, &label, &output_path) {
+    if let Err(e) = plot_data(&flows, &pressures, &label, temp_c, p_abs_bar, area_m2, &output_path) {
         println!("Ошибка построения графика: {}", e);
         return;
     }
@@ -186,26 +236,49 @@ fn plot_data(
     flows: &[f64],
     pressures: &[f64],
     label: &str,
+    temp_c: f64,
+    p_abs_bar: f64,
+    area_m2: f64,
     output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let root = SVGBackend::new(output_path, (1000, 600)).into_drawing_area();
+    let root = BitMapBackend::new(output_path, (1100, 700)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    let x_max = flows.iter().cloned().fold(f64::MIN, f64::max);
+    let x_max = flows.iter().cloned().fold(f64::MIN, f64::max).max(1.0);
     let y_max = pressures.iter().cloned().fold(f64::MIN, f64::max);
-    let y_min = pressures.iter().cloned().fold(f64::MAX, f64::min);
+    let y_min = pressures.iter().cloned().fold(f64::MAX, f64::min).min(0.0);
 
-    let mut chart = ChartBuilder::on(&root)
+    let (slope, intercept) = linear_regression(flows, pressures);
+    let conv_factor = conv_factor_nlmin_to_fm3m2h(temp_c, p_abs_bar, area_m2);
+
+    let chart = ChartBuilder::on(&root)
         .caption("Differential Pressure", ("sans-serif", 30))
         .margin(20)
-        .x_label_area_size(40)
-        .y_label_area_size(60)
+        .x_label_area_size(45)
+        .y_label_area_size(70)
+        .right_y_label_area_size(70)
+        .top_x_label_area_size(45)
         .build_cartesian_2d(0f64..x_max, y_min..y_max)?;
+
+    let mut chart = chart.set_secondary_coord(
+        0f64..(x_max * conv_factor),
+        (y_min / 1e6)..(y_max / 1e6),
+    );
 
     chart
         .configure_mesh()
         .x_desc("Flow (l/min)")
         .y_desc("Differential Pressure (Pa)")
+        .x_label_formatter(&|v| format!("{:.0}", v))
+        .y_label_formatter(&|v| format!("{:.0}", v))
+        .draw()?;
+
+    chart
+        .configure_secondary_axes()
+        .x_desc("Flow (fm3/(m2*h))")
+        .y_desc("Differential Pressure (MPa)")
+        .x_label_formatter(&|v| format!("{:.0}", v))
+        .y_label_formatter(&|v| format!("{:.1}", v))
         .draw()?;
 
     chart
@@ -216,11 +289,45 @@ fn plot_data(
         .label(label)
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
 
+    chart.draw_series(
+        flows
+            .iter()
+            .zip(pressures.iter())
+            .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
+    )?;
+
+    let trend_label = format!("y = {:.2}x + {:.2}", slope, intercept);
+    chart
+        .draw_series(LineSeries::new(
+            vec![(0f64, intercept), (x_max, slope * x_max + intercept)],
+            &BLUE,
+        ))?
+        .label(trend_label.clone())
+        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
+
     chart
         .configure_series_labels()
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK)
         .draw()?;
+
+    let box_x0 = x_max * 0.55;
+    let box_x1 = x_max * 0.98;
+    let box_y0 = y_min + (y_max - y_min) * 0.88;
+    let box_y1 = y_min + (y_max - y_min) * 0.97;
+    chart.draw_series(std::iter::once(Rectangle::new(
+        [(box_x0, box_y0), (box_x1, box_y1)],
+        WHITE.mix(0.85).filled(),
+    )))?;
+    chart.draw_series(std::iter::once(Rectangle::new(
+        [(box_x0, box_y0), (box_x1, box_y1)],
+        BLACK.stroke_width(1),
+    )))?;
+    chart.draw_series(std::iter::once(Text::new(
+        trend_label,
+        (box_x0 + x_max * 0.01, (box_y0 + box_y1) / 2.0),
+        ("sans-serif", 16).into_font(),
+    )))?;
 
     root.present()?;
     Ok(())

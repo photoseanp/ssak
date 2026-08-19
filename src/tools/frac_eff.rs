@@ -41,7 +41,7 @@ fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
 
     if selections.is_empty() {
         println!("Файлы не выбраны. Возврат в главное меню.");
-            return None;
+        return None;
     }
 
     Some(selections.into_iter().map(|i| dir.join(&files[i])).collect())
@@ -108,8 +108,10 @@ fn parse_frac_eff_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
         let size_val = fields[si].trim().replace(',', ".").parse::<f64>();
         let eff_val = fields[ei].trim().replace(',', ".").parse::<f64>();
         if let (Ok(s), Ok(e)) = (size_val, eff_val) {
-            sizes.push(s);
-            effs.push(e);
+            if s > 0.0 {
+                sizes.push(s);
+                effs.push(e);
+            }
         }
     }
 
@@ -165,8 +167,8 @@ pub fn run(config: &AppConfig) {
     }
 
     let mut output_name = match read_text_or_default(
-        "Введите имя файла для сохранения графика (SVG)",
-        "frac_eff_result.svg",
+        "Введите имя файла для сохранения графика (PNG)",
+        "frac_eff_result.png",
     ) {
         Some(v) => v,
         None => {
@@ -174,8 +176,8 @@ pub fn run(config: &AppConfig) {
             return;
         }
     };
-    if !output_name.to_lowercase().ends_with(".svg") {
-        output_name.push_str(".svg");
+    if !output_name.to_lowercase().ends_with(".png") {
+        output_name.push_str(".png");
     }
 
     if let Err(e) = config.ensure_output_dir() {
@@ -198,7 +200,7 @@ fn plot_data(
     series: &[(String, Vec<f64>, Vec<f64>)],
     output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let root = SVGBackend::new(output_path, (1000, 600)).into_drawing_area();
+    let root = BitMapBackend::new(output_path, (1100, 700)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let x_max = series
@@ -211,18 +213,25 @@ fn plot_data(
         .flat_map(|(_, s, _)| s.iter())
         .cloned()
         .fold(f64::MAX, f64::min);
+    let y_min = series
+        .iter()
+        .flat_map(|(_, _, e)| e.iter())
+        .cloned()
+        .fold(f64::MAX, f64::min);
 
     let mut chart = ChartBuilder::on(&root)
         .caption("Fractional Efficiency", ("sans-serif", 30))
         .margin(20)
-        .x_label_area_size(40)
-        .y_label_area_size(50)
-        .build_cartesian_2d(x_min..x_max, 0f64..100f64)?;
+        .x_label_area_size(45)
+        .y_label_area_size(60)
+        .build_cartesian_2d((x_min..x_max).log_scale(), y_min..101f64)?;
 
     chart
         .configure_mesh()
-        .x_desc("Particle Size")
-        .y_desc("Efficiency, %")
+        .x_desc("Particle Size (um)")
+        .y_desc("Efficiency (%)")
+        .x_label_formatter(&|v| format!("{:.0}", v))
+        .y_label_formatter(&|v| format!("{:.1}", v))
         .draw()?;
 
     let palette: [&RGBColor; 6] = [&RED, &BLUE, &GREEN, &MAGENTA, &CYAN, &BLACK];
@@ -236,6 +245,13 @@ fn plot_data(
             ))?
             .label(label.clone())
             .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+
+        chart.draw_series(
+            sizes
+                .iter()
+                .zip(effs.iter())
+                .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
+        )?;
     }
 
     chart
