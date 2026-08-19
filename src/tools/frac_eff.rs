@@ -219,12 +219,16 @@ fn plot_data(
         .cloned()
         .fold(f64::MAX, f64::min);
 
+    let key_points: Vec<f64> = vec![
+        0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+        10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0,
+    ];
+
     let mut chart = ChartBuilder::on(&root)
-        .caption("Fractional Efficiency", ("sans-serif", 30))
         .margin(20)
         .x_label_area_size(45)
         .y_label_area_size(60)
-        .build_cartesian_2d((x_min..x_max).log_scale(), y_min..101f64)?;
+        .build_cartesian_2d((x_min..x_max).log_scale().with_key_points(key_points), y_min..101f64)?;
 
     chart
         .configure_mesh()

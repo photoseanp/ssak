@@ -133,6 +133,25 @@ fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
     (slope, intercept)
 }
 
+/// Коэффициент детерминации R^2 для линейной регрессии.
+fn r_squared(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> f64 {
+    let mean_y: f64 = y.iter().sum::<f64>() / y.len() as f64;
+    let ss_tot: f64 = y.iter().map(|v| (v - mean_y).powi(2)).sum();
+    let ss_res: f64 = x
+        .iter()
+        .zip(y.iter())
+        .map(|(xi, yi)| {
+            let pred = slope * xi + intercept;
+            (yi - pred).powi(2)
+        })
+        .sum();
+    if ss_tot.abs() < f64::EPSILON {
+        1.0
+    } else {
+        1.0 - ss_res / ss_tot
+    }
+}
+
 /// Перевод нормальных л/мин -> фм3/(м2*ч) с учётом температуры, абс. давления
 /// в контуре и площади фильтроэлемента (порт из diffP_parser.py).
 /// Нормальные условия: T_std = 0°C (273.15 K), P_std = 1.01325 бар.
@@ -249,14 +268,14 @@ fn plot_data(
     let y_min = pressures.iter().cloned().fold(f64::MAX, f64::min).min(0.0);
 
     let (slope, intercept) = linear_regression(flows, pressures);
+    let r2 = r_squared(flows, pressures, slope, intercept);
     let conv_factor = conv_factor_nlmin_to_fm3m2h(temp_c, p_abs_bar, area_m2);
 
     let chart = ChartBuilder::on(&root)
-        .caption("Differential Pressure", ("sans-serif", 30))
         .margin(20)
         .x_label_area_size(45)
         .y_label_area_size(70)
-        .right_y_label_area_size(70)
+        .right_y_label_area_size(85)
         .top_x_label_area_size(45)
         .build_cartesian_2d(0f64..x_max, y_min..y_max)?;
 
@@ -278,7 +297,7 @@ fn plot_data(
         .x_desc("Flow (fm3/(m2*h))")
         .y_desc("Differential Pressure (MPa)")
         .x_label_formatter(&|v| format!("{:.0}", v))
-        .y_label_formatter(&|v| format!("{:.1}", v))
+        .y_label_formatter(&|v| format!("{:.4}", v))
         .draw()?;
 
     chart
@@ -296,13 +315,15 @@ fn plot_data(
             .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
     )?;
 
-    let trend_label = format!("y = {:.2}x + {:.2}", slope, intercept);
+    let eq_line = format!("y = {:.2}x + {:.2}", slope, intercept);
+    let r2_line = format!("R2 = {:.4}", r2);
+
     chart
         .draw_series(LineSeries::new(
             vec![(0f64, intercept), (x_max, slope * x_max + intercept)],
             &BLUE,
         ))?
-        .label(trend_label.clone())
+        .label(eq_line.clone())
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
 
     chart
@@ -311,10 +332,24 @@ fn plot_data(
         .border_style(&BLACK)
         .draw()?;
 
-    let box_x0 = x_max * 0.55;
-    let box_x1 = x_max * 0.98;
-    let box_y0 = y_min + (y_max - y_min) * 0.88;
-    let box_y1 = y_min + (y_max - y_min) * 0.97;
+    let (plot_w_px, plot_h_px) = chart.plotting_area().dim_in_pixel();
+    let px_per_x = plot_w_px as f64 / x_max;
+    let px_per_y = plot_h_px as f64 / (y_max - y_min);
+
+    const FONT_PX: f64 = 16.0;
+    let line_height_px = FONT_PX * 1.5;
+    let longest_len = eq_line.chars().count().max(r2_line.chars().count()) as f64;
+    let text_width_px = longest_len * FONT_PX * 0.58 + 16.0;
+    let text_height_px = line_height_px * 2.0 + 10.0;
+
+    let box_w = text_width_px / px_per_x;
+    let box_h = text_height_px / px_per_y;
+
+    let box_x1 = x_max * 0.99;
+    let box_x0 = (box_x1 - box_w).max(0.0);
+    let box_y1 = y_max - (y_max - y_min) * 0.02;
+    let box_y0 = box_y1 - box_h;
+
     chart.draw_series(std::iter::once(Rectangle::new(
         [(box_x0, box_y0), (box_x1, box_y1)],
         WHITE.mix(0.85).filled(),
@@ -323,9 +358,19 @@ fn plot_data(
         [(box_x0, box_y0), (box_x1, box_y1)],
         BLACK.stroke_width(1),
     )))?;
+
+    let text_x = box_x0 + 8.0 / px_per_x;
+    let line1_y = box_y1 - (line_height_px * 0.9) / px_per_y;
+    let line2_y = box_y1 - (line_height_px * 1.9) / px_per_y;
+
     chart.draw_series(std::iter::once(Text::new(
-        trend_label,
-        (box_x0 + x_max * 0.01, (box_y0 + box_y1) / 2.0),
+        eq_line,
+        (text_x, line1_y),
+        ("sans-serif", 16).into_font(),
+    )))?;
+    chart.draw_series(std::iter::once(Text::new(
+        r2_line,
+        (text_x, line2_y),
         ("sans-serif", 16).into_font(),
     )))?;
 
