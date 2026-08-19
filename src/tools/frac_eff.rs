@@ -165,8 +165,8 @@ pub fn run(config: &AppConfig) {
     }
 
     let mut output_name = match read_text_or_default(
-        "Введите имя файла для сохранения графика (PNG)",
-        "frac_eff_result.png",
+        "Введите имя файла для сохранения графика (SVG)",
+        "frac_eff_result.svg",
     ) {
         Some(v) => v,
         None => {
@@ -174,8 +174,8 @@ pub fn run(config: &AppConfig) {
             return;
         }
     };
-    if !output_name.to_lowercase().ends_with(".png") {
-        output_name.push_str(".png");
+    if !output_name.to_lowercase().ends_with(".svg") {
+        output_name.push_str(".svg");
     }
 
     if let Err(e) = config.ensure_output_dir() {
@@ -198,7 +198,7 @@ fn plot_data(
     series: &[(String, Vec<f64>, Vec<f64>)],
     output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let root = BitMapBackend::new(output_path, (1000, 600)).into_drawing_area();
+    let root = SVGBackend::new(output_path, (1000, 600)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let x_max = series
