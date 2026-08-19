@@ -203,12 +203,12 @@ fn plot_data(
     let root = BitMapBackend::new(output_path, (1100, 700)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    let x_max = series
+    let x_max_raw = series
         .iter()
         .flat_map(|(_, s, _)| s.iter())
         .cloned()
         .fold(f64::MIN, f64::max);
-    let x_min = series
+    let x_min_raw = series
         .iter()
         .flat_map(|(_, s, _)| s.iter())
         .cloned()
@@ -218,6 +218,11 @@ fn plot_data(
         .flat_map(|(_, _, e)| e.iter())
         .cloned()
         .fold(f64::MAX, f64::min);
+
+    // Небольшой мультипликативный отступ (лог. шкала), чтобы маркеры-круги (радиус 3px)
+    // в точках с минимальным/максимальным X не выглядывали за рамку графика.
+    let x_min = x_min_raw / 1.08;
+    let x_max = x_max_raw * 1.03;
 
     let key_points: Vec<f64> = vec![
         0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
@@ -234,7 +239,7 @@ fn plot_data(
         .configure_mesh()
         .x_desc("Particle Size (um)")
         .y_desc("Efficiency (%)")
-        .x_label_formatter(&|v| format!("{:.0}", v))
+        .x_label_formatter(&|v| format!("{:.1}", v))
         .y_label_formatter(&|v| format!("{:.1}", v))
         .draw()?;
 

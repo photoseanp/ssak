@@ -315,15 +315,14 @@ fn plot_data(
             .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
     )?;
 
-    let eq_line = format!("y = {:.2}x + {:.2}", slope, intercept);
-    let r2_line = format!("R2 = {:.4}", r2);
+    let trend_label = format!("y = {:.2}x + {:.2} (R2 = {:.4})", slope, intercept, r2);
 
     chart
         .draw_series(LineSeries::new(
             vec![(0f64, intercept), (x_max, slope * x_max + intercept)],
             &BLUE,
         ))?
-        .label(eq_line.clone())
+        .label(trend_label)
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
 
     chart
@@ -331,48 +330,6 @@ fn plot_data(
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK)
         .draw()?;
-
-    let (plot_w_px, plot_h_px) = chart.plotting_area().dim_in_pixel();
-    let px_per_x = plot_w_px as f64 / x_max;
-    let px_per_y = plot_h_px as f64 / (y_max - y_min);
-
-    const FONT_PX: f64 = 16.0;
-    let line_height_px = FONT_PX * 1.5;
-    let longest_len = eq_line.chars().count().max(r2_line.chars().count()) as f64;
-    let text_width_px = longest_len * FONT_PX * 0.58 + 16.0;
-    let text_height_px = line_height_px * 2.0 + 10.0;
-
-    let box_w = text_width_px / px_per_x;
-    let box_h = text_height_px / px_per_y;
-
-    let box_x1 = x_max * 0.99;
-    let box_x0 = (box_x1 - box_w).max(0.0);
-    let box_y1 = y_max - (y_max - y_min) * 0.02;
-    let box_y0 = box_y1 - box_h;
-
-    chart.draw_series(std::iter::once(Rectangle::new(
-        [(box_x0, box_y0), (box_x1, box_y1)],
-        WHITE.mix(0.85).filled(),
-    )))?;
-    chart.draw_series(std::iter::once(Rectangle::new(
-        [(box_x0, box_y0), (box_x1, box_y1)],
-        BLACK.stroke_width(1),
-    )))?;
-
-    let text_x = box_x0 + 8.0 / px_per_x;
-    let line1_y = box_y1 - (line_height_px * 0.9) / px_per_y;
-    let line2_y = box_y1 - (line_height_px * 1.9) / px_per_y;
-
-    chart.draw_series(std::iter::once(Text::new(
-        eq_line,
-        (text_x, line1_y),
-        ("sans-serif", 16).into_font(),
-    )))?;
-    chart.draw_series(std::iter::once(Text::new(
-        r2_line,
-        (text_x, line2_y),
-        ("sans-serif", 16).into_font(),
-    )))?;
 
     root.present()?;
     Ok(())
