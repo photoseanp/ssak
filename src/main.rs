@@ -11,7 +11,7 @@ fn main() {
         plotters::style::FontStyle::Normal,
         dejavu::sans::regular(),
     ) {
-        eprintln!("Предупреждение: не удалось зарегистрировать встроенный шрифт: {:?}", e);
+        eprintln!("Предупреждение: не удалось зарегистрировать встроенный шрифт: {}", e);
     }
 
     let mut config = AppConfig::load();
