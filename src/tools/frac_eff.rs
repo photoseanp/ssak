@@ -219,10 +219,10 @@ fn plot_data(
         .cloned()
         .fold(f64::MAX, f64::min);
 
-    // Небольшой мультипликативный отступ (лог. шкала), чтобы маркеры-круги (радиус 3px)
-    // в точках с минимальным/максимальным X не выглядывали за рамку графика.
-    let x_min = x_min_raw / 1.08;
-    let x_max = x_max_raw * 1.03;
+    // Мультипликативный отступ (лог. шкала), чтобы маркеры-круги (радиус 3px)
+    // и минор-грид лог. шкалы полностью поместились в рамке графика.
+    let x_min = x_min_raw / 1.18;
+    let x_max = x_max_raw * 1.05;
 
     let key_points: Vec<f64> = vec![
         0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
@@ -265,6 +265,7 @@ fn plot_data(
 
     chart
         .configure_series_labels()
+        .position(SeriesLabelPosition::LowerRight)
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK)
         .draw()?;
