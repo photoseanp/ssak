@@ -13,7 +13,7 @@
 
 use crate::config::AppConfig;
 use crate::text_io::read_text_lossy;
-use dialoguer::{Input, Select};
+use dialoguer::{Input, MultiSelect};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -142,7 +142,7 @@ fn fmt_pct(v: f64) -> String {
     }
 }
 
-fn select_up_down_files(config: &AppConfig) -> Option<(PathBuf, PathBuf)> {
+fn select_two_files(config: &AppConfig) -> Option<(PathBuf, PathBuf)> {
     let dir = Path::new(&config.input_dir);
 
     if !dir.exists() || !dir.is_dir() {
@@ -173,21 +173,47 @@ fn select_up_down_files(config: &AppConfig) -> Option<(PathBuf, PathBuf)> {
 
     files.sort();
 
-    let up_selection = Select::new()
-        .with_prompt("Выберите файл с данными dCmup (upstream)")
-        .items(&files)
-        .default(0)
-        .interact()
-        .ok()?;
+    loop {
+        let selections = MultiSelect::new()
+            .with_prompt("Выберите ровно два файла для объединения (Space — выбрать/снять, Enter — подтвердить)")
+            .items(&files)
+            .interact()
+            .ok()?;
 
-    let down_selection = Select::new()
-        .with_prompt("Выберите файл с данными dCmdown (downstream)")
-        .items(&files)
-        .default(if up_selection == 0 { 1 } else { 0 })
-        .interact()
-        .ok()?;
+        match selections.len() {
+            2 => {
+                let a = dir.join(&files[selections[0]]);
+                let b = dir.join(&files[selections[1]]);
+                return Some((a, b));
+            }
+            0 => {
+                println!("Файлы не выбраны. Возврат в главное меню.");
+                return None;
+            }
+            n => {
+                println!(
+                    "Нужно выбрать ровно два файла (сейчас выбрано: {}). Попробуйте ещё раз.",
+                    n
+                );
+                continue;
+            }
+        }
+    }
+}
 
-    Some((dir.join(&files[up_selection]), dir.join(&files[down_selection])))
+/// Определяет, какой из двух файлов содержит данные upstream (dCmup), а какой —
+/// downstream (dCmdown), по сумме значений соответствующей колонки: в файле "upstream"
+/// сумма dCmup заведомо больше суммы dCmup во втором файле (там эта колонка нулевая),
+/// и наоборот для dCmdown.
+fn order_up_down(a: (PathBuf, FracTable), b: (PathBuf, FracTable)) -> ((PathBuf, FracTable), (PathBuf, FracTable)) {
+    let sum_up_a: f64 = a.1.rows.iter().map(|r| r.d_cm_up).sum();
+    let sum_up_b: f64 = b.1.rows.iter().map(|r| r.d_cm_up).sum();
+
+    if sum_up_a >= sum_up_b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 fn read_text_or_default(prompt: &str, default: &str) -> Option<String> {
@@ -227,25 +253,34 @@ pub fn run(config: &AppConfig) {
     println!("Объединение данных датчиков (dCmup/dCmdown)");
     println!("--------------------------------------------");
 
-    let (up_path, down_path) = match select_up_down_files(config) {
+    let (path_a, path_b) = match select_two_files(config) {
         Some(v) => v,
         None => return,
     };
 
-    let up_table = match parse_table(&up_path) {
+    let table_a = match parse_table(&path_a) {
         Some(t) => t,
         None => {
-            println!("Не удалось разобрать файл {}", up_path.display());
+            println!("Не удалось разобрать файл {}", path_a.display());
             return;
         }
     };
-    let down_table = match parse_table(&down_path) {
+    let table_b = match parse_table(&path_b) {
         Some(t) => t,
         None => {
-            println!("Не удалось разобрать файл {}", down_path.display());
+            println!("Не удалось разобрать файл {}", path_b.display());
             return;
         }
     };
+
+    let ((up_path, up_table), (down_path, down_table)) =
+        order_up_down((path_a, table_a), (path_b, table_b));
+
+    println!(
+        "Определено автоматически: dCmup <- {}, dCmdown <- {}",
+        up_path.file_name().unwrap_or_default().to_string_lossy(),
+        down_path.file_name().unwrap_or_default().to_string_lossy(),
+    );
 
     if up_table.rows.len() != down_table.rows.len() {
         println!(
@@ -354,5 +389,36 @@ mod tests {
         let up = Path::new("FEG-PN1-10_SP1_1000lpm.txt");
         let down = Path::new("FEG-PN1-10_SP2_1000lpm.txt");
         assert_eq!(default_output_name(up, down), "FEG-PN1-10_SP_merged.txt");
+    }
+
+    #[test]
+    fn order_up_down_picks_larger_up_sum_first() {
+        let table_up = FracTable {
+            header_lines: vec![],
+            rows: vec![BinRow {
+                xu: "0.316".into(),
+                x: "0.328".into(),
+                xo: "0.340".into(),
+                dx: "0.024".into(),
+                d_cm_up: 1.0,
+                d_cm_down: 0.0,
+            }],
+        };
+        let table_down = FracTable {
+            header_lines: vec![],
+            rows: vec![BinRow {
+                xu: "0.316".into(),
+                x: "0.328".into(),
+                xo: "0.340".into(),
+                dx: "0.024".into(),
+                d_cm_up: 0.0,
+                d_cm_down: 1.0,
+            }],
+        };
+        let a = (PathBuf::from("down.txt"), table_down);
+        let b = (PathBuf::from("up.txt"), table_up);
+        let (up, down) = order_up_down(a, b);
+        assert_eq!(up.0, PathBuf::from("up.txt"));
+        assert_eq!(down.0, PathBuf::from("down.txt"));
     }
 }
