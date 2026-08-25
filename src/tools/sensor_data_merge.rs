@@ -123,13 +123,20 @@ fn parse_table(path: &Path) -> Option<FracTable> {
     Some(FracTable { header_lines, rows })
 }
 
+/// Пересчитывает проскок P[%] и эффективность E[%] по классической формуле
+/// фильтрационной эффективности: доля частиц, прошедших сквозь фильтр,
+/// относительно концентрации на входе (upstream). Если dCmup = 0 (входная
+/// концентрация не измерена/равна нулю), результат не определён обычной
+/// формулой — используется отдельная обработка: оба нуля -> NaN/NaN,
+/// dCmup = 0 и dCmdown > 0 -> 200.0/-100.0 (флаг некорректного измерения,
+/// как в штатном формате прибора).
 fn compute_p_e(d_cm_up: f64, d_cm_down: f64) -> (f64, f64) {
     if d_cm_up == 0.0 && d_cm_down == 0.0 {
         (f64::NAN, f64::NAN)
-    } else if d_cm_up == 0.0 && d_cm_down > 0.0 {
+    } else if d_cm_up == 0.0 {
         (200.0, -100.0)
     } else {
-        let p = d_cm_down / (d_cm_up + d_cm_down) * 100.0;
+        let p = d_cm_down / d_cm_up * 100.0;
         (p, 100.0 - p)
     }
 }
@@ -379,9 +386,16 @@ mod tests {
 
     #[test]
     fn compute_p_e_normal_case() {
-        let (p, e) = compute_p_e(0.99, 0.01);
-        assert!((p - 1.0).abs() < 1e-9);
-        assert!((e - 99.0).abs() < 1e-9);
+        let (p, e) = compute_p_e(4.0, 1.0);
+        assert!((p - 25.0).abs() < 1e-9);
+        assert!((e - 75.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_p_e_equal_up_down_means_zero_efficiency() {
+        let (p, e) = compute_p_e(0.01, 0.01);
+        assert!((p - 100.0).abs() < 1e-9);
+        assert!(e.abs() < 1e-9);
     }
 
     #[test]
