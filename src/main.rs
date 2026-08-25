@@ -24,6 +24,7 @@ fn main() {
         "Воздухопроницаемость (степенная модель)",
         "Парсер дифференциального давления",
         "Сравнение фракционной эффективности",
+        "Объединение данных датчиков (dCmup/dCmdown)",
         "Настройка папок (вход/выход)",
         "Выход",
     ];
@@ -54,8 +55,9 @@ fn main() {
             2 => tools::air_perm_power::run(&config),
             3 => tools::diffp_parser::run(&config),
             4 => tools::frac_eff::run(&config),
-            5 => config::configure_paths(&mut config),
-            6 => break,
+            5 => tools::sensor_data_merge::run(&config),
+            6 => config::configure_paths(&mut config),
+            7 => break,
             _ => {}
         }
 
