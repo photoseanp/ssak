@@ -1,9 +1,47 @@
 use crate::config::AppConfig;
 use crate::text_io::read_text_lossy;
-use dialoguer::{Input, MultiSelect};
+use dialoguer::{Input, MultiSelect, Select};
 use plotters::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Величина, по которой считается фракционная эффективность: массовая
+/// концентрация (dCmup/dCmdown) или счётная концентрация (dCnup/dCndown).
+/// Нужна, чтобы правильно выбрать колонку "E", если в файле присутствуют
+/// оба варианта таблицы (мода "по массе" и мода "по счёту") бок о бок.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quantity {
+    Mass,
+    Count,
+}
+
+impl Quantity {
+    fn up_col(self) -> &'static str {
+        match self {
+            Quantity::Mass => "dCmup",
+            Quantity::Count => "dCnup",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Quantity::Mass => "Массовая концентрация (dCmup/dCmdown)",
+            Quantity::Count => "Счётная концентрация (dCnup/dCndown)",
+        }
+    }
+}
+
+fn select_quantity() -> Option<Quantity> {
+    let items = [Quantity::Mass.label(), Quantity::Count.label()];
+    let selection = Select::new()
+        .with_prompt("Какую величину использовать для сравнения эффективности?")
+        .items(&items)
+        .default(0)
+        .interact()
+        .ok()?;
+
+    Some(if selection == 0 { Quantity::Mass } else { Quantity::Count })
+}
 
 fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
     let dir = Path::new(&config.input_dir);
@@ -72,7 +110,25 @@ fn find_col(fields: &[&str], target: &str) -> Option<usize> {
     })
 }
 
-fn parse_frac_eff_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
+/// Ищет колонку с именем `target`, начиная поиск с индекса `from` (включительно).
+/// Нужно, чтобы выбрать правильную колонку "E", когда в одной строке заголовка
+/// присутствуют сразу два блока (по массе и по счёту), каждый со своей "E".
+fn find_col_from(fields: &[&str], target: &str, from: usize) -> Option<usize> {
+    fields.iter().enumerate().skip(from).find_map(|(i, f)| {
+        let t = f.trim();
+        if let Some(rest) = t.strip_prefix(target) {
+            if rest.starts_with(' ') || rest.starts_with('[') {
+                Some(i)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_frac_eff_file(path: &Path, quantity: Quantity) -> Option<(Vec<f64>, Vec<f64>)> {
     let content = read_text_lossy(path)?;
     let lines: Vec<&str> = content.lines().collect();
 
@@ -83,7 +139,15 @@ fn parse_frac_eff_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
     for (i, line) in lines.iter().enumerate() {
         let fields: Vec<&str> = line.split('\t').collect();
         let si = find_col(&fields, "X");
-        let ei = find_col(&fields, "E");
+        // Если в таблице есть маркер выбранной величины (dCmup/dCnup),
+        // ищем "E" после него — это позволяет различить два блока
+        // (по массе и по счёту), если они присутствуют в одной строке.
+        // Если маркера нет (файл содержит только один вариант величины),
+        // используем первую попавшуюся колонку "E" — как раньше.
+        let ei = match si.and_then(|s| find_col(&fields, quantity.up_col()).map(|m| (s, m))) {
+            Some((_, marker)) => find_col_from(&fields, "E", marker),
+            None => find_col(&fields, "E"),
+        };
         if let (Some(si), Some(ei)) = (si, ei) {
             size_idx = Some(si);
             eff_idx = Some(ei);
@@ -125,6 +189,11 @@ pub fn run(config: &AppConfig) {
     println!("Сравнение фракционной эффективности");
     println!("--------------------------------------");
 
+    let quantity = match select_quantity() {
+        Some(q) => q,
+        None => return,
+    };
+
     let paths = match select_input_files(config) {
         Some(p) => p,
         None => return,
@@ -133,7 +202,7 @@ pub fn run(config: &AppConfig) {
     let mut series: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::new();
 
     for path in &paths {
-        match parse_frac_eff_file(path) {
+        match parse_frac_eff_file(path, quantity) {
             Some((sizes, effs)) => {
                 let default_label = path
                     .file_stem()
@@ -154,7 +223,8 @@ pub fn run(config: &AppConfig) {
             }
             None => {
                 println!(
-                    "Не удалось найти данные фракционной эффективности в файле {} — файл пропущен.",
+                    "Не удалось найти данные фракционной эффективности ({}) в файле {} — файл пропущен.",
+                    quantity.label(),
                     path.display()
                 );
             }

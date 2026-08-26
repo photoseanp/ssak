@@ -1,21 +1,70 @@
 //! Sensor data merge — объединяет пару файлов фракционной эффективности
 //! (экспорт вида *SP1*/*SP2*, *_up*/*_down*), в одном из которых заполнена
-//! только колонка dCmup (upstream), а в другом — только dCmdown (downstream),
-//! в единый TXT-файл, пригодный для дальнейшей обработки.
+//! только "up"-колонка выбранной величины (dCmup или dCnup), а в другом —
+//! только "down"-колонка (dCmdown или dCndown), в единый TXT-файл, пригодный
+//! для дальнейшей обработки.
+//!
+//! Поддерживаются два вида величины (выбираются в начале работы инструмента):
+//! - массовая концентрация: dCmup [mg/m³] / dCmdown [mg/m³];
+//! - счётная концентрация: dCnup [1/m³] / dCndown [1/m³] (либо иные
+//!   единицы, единица берётся из заголовка исходного файла как есть).
 //!
 //! Формат входных/выходных файлов совпадает с экспортом прибора: текстовая
 //! "шапка" метаданных измерения, затем таблица вида
-//! Xu [µm]\tX [µm]\tXo [µm]\tdX [µm]\t \tdCmup [mg/m³]\tdCmdown [mg/m³]\t \tP [%]\tE [%]
+//! Xu [µm]\tX [µm]\tXo [µm]\tdX [µm]\t \t<up> [..]\t<down> [..]\t \tP [%]\tE [%]
 //!
 //! Строки объединяются по индексу канала, с проверкой совпадения границ
 //! канала (Xu/X/Xo/dX) между двумя файлами. Проскок P[%] и эффективность
-//! E[%] пересчитываются заново по объединённым значениям dCmup/dCmdown.
+//! E[%] пересчитываются заново по объединённым значениям up/down.
 
 use crate::config::AppConfig;
 use crate::text_io::read_text_lossy;
-use dialoguer::{Input, MultiSelect};
+use dialoguer::{Input, MultiSelect, Select};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Величина, по которой считается фракционная эффективность: массовая
+/// концентрация (dCmup/dCmdown) или счётная концентрация (dCnup/dCndown).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quantity {
+    Mass,
+    Count,
+}
+
+impl Quantity {
+    fn up_col(self) -> &'static str {
+        match self {
+            Quantity::Mass => "dCmup",
+            Quantity::Count => "dCnup",
+        }
+    }
+
+    fn down_col(self) -> &'static str {
+        match self {
+            Quantity::Mass => "dCmdown",
+            Quantity::Count => "dCndown",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Quantity::Mass => "Массовая концентрация (dCmup/dCmdown)",
+            Quantity::Count => "Счётная концентрация (dCnup/dCndown)",
+        }
+    }
+}
+
+fn select_quantity() -> Option<Quantity> {
+    let items = [Quantity::Mass.label(), Quantity::Count.label()];
+    let selection = Select::new()
+        .with_prompt("Какую величину объединяем?")
+        .items(&items)
+        .default(0)
+        .interact()
+        .ok()?;
+
+    Some(if selection == 0 { Quantity::Mass } else { Quantity::Count })
+}
 
 fn find_col(fields: &[&str], target: &str) -> Option<usize> {
     fields.iter().position(|f| {
@@ -34,8 +83,8 @@ struct BinRow {
     x: String,
     xo: String,
     dx: String,
-    d_cm_up: f64,
-    d_cm_down: f64,
+    up: f64,
+    down: f64,
 }
 
 impl BinRow {
@@ -49,7 +98,7 @@ struct FracTable {
     rows: Vec<BinRow>,
 }
 
-fn parse_table(path: &Path) -> Option<FracTable> {
+fn parse_table(path: &Path, quantity: Quantity) -> Option<FracTable> {
     let content = read_text_lossy(path)?;
     let lines: Vec<&str> = content.lines().collect();
 
@@ -63,7 +112,10 @@ fn parse_table(path: &Path) -> Option<FracTable> {
 
     for (i, line) in lines.iter().enumerate() {
         let fields: Vec<&str> = line.split('\t').collect();
-        if let (Some(u), Some(d)) = (find_col(&fields, "dCmup"), find_col(&fields, "dCmdown")) {
+        if let (Some(u), Some(d)) = (
+            find_col(&fields, quantity.up_col()),
+            find_col(&fields, quantity.down_col()),
+        ) {
             xu_idx = find_col(&fields, "Xu");
             x_idx = find_col(&fields, "X");
             xo_idx = find_col(&fields, "Xo");
@@ -82,8 +134,10 @@ fn parse_table(path: &Path) -> Option<FracTable> {
             }
             _ => {
                 println!(
-                    "{}: не найдены колонки Xu/X/Xo/dX/dCmup/dCmdown в таблице.",
-                    path.display()
+                    "{}: не найдены колонки Xu/X/Xo/dX/{}/{} в таблице.",
+                    path.display(),
+                    quantity.up_col(),
+                    quantity.down_col()
                 );
                 return None;
             }
@@ -103,14 +157,14 @@ fn parse_table(path: &Path) -> Option<FracTable> {
         }
         let up_val = fields[up_i].trim().replace(',', ".").parse::<f64>();
         let down_val = fields[down_i].trim().replace(',', ".").parse::<f64>();
-        if let (Ok(d_cm_up), Ok(d_cm_down)) = (up_val, down_val) {
+        if let (Ok(up), Ok(down)) = (up_val, down_val) {
             rows.push(BinRow {
                 xu: fields[xu_i].trim().to_string(),
                 x: fields[x_i].trim().to_string(),
                 xo: fields[xo_i].trim().to_string(),
                 dx: fields[dx_i].trim().to_string(),
-                d_cm_up,
-                d_cm_down,
+                up,
+                down,
             });
         }
     }
@@ -125,18 +179,17 @@ fn parse_table(path: &Path) -> Option<FracTable> {
 
 /// Пересчитывает проскок P[%] и эффективность E[%] по классической формуле
 /// фильтрационной эффективности: доля частиц, прошедших сквозь фильтр,
-/// относительно концентрации на входе (upstream). Если dCmup = 0 (входная
-/// концентрация не измерена/равна нулю), результат не определён обычной
-/// формулой — используется отдельная обработка: оба нуля -> NaN/NaN,
-/// dCmup = 0 и dCmdown > 0 -> 200.0/-100.0 (флаг некорректного измерения,
-/// как в штатном формате прибора).
-fn compute_p_e(d_cm_up: f64, d_cm_down: f64) -> (f64, f64) {
-    if d_cm_up == 0.0 && d_cm_down == 0.0 {
+/// относительно значения на входе (upstream). Если upstream = 0, результат
+/// не определён обычной формулой — используется отдельная обработка: оба
+/// нуля -> NaN/NaN, upstream = 0 и downstream > 0 -> 200.0/-100.0 (флаг
+/// некорректного измерения, как в штатном формате прибора).
+fn compute_p_e(up: f64, down: f64) -> (f64, f64) {
+    if up == 0.0 && down == 0.0 {
         (f64::NAN, f64::NAN)
-    } else if d_cm_up == 0.0 {
+    } else if up == 0.0 {
         (200.0, -100.0)
     } else {
-        let p = d_cm_down / d_cm_up * 100.0;
+        let p = down / up * 100.0;
         (p, 100.0 - p)
     }
 }
@@ -208,13 +261,12 @@ fn select_two_files(config: &AppConfig) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-/// Определяет, какой из двух файлов содержит данные upstream (dCmup), а какой —
-/// downstream (dCmdown), по сумме значений соответствующей колонки: в файле "upstream"
-/// сумма dCmup заведомо больше суммы dCmup во втором файле (там эта колонка нулевая),
-/// и наоборот для dCmdown.
+/// Определяет, какой из двух файлов содержит данные upstream, а какой —
+/// downstream, по сумме значений колонки "up": в файле "upstream" сумма заведомо
+/// больше суммы "up" во втором файле (там эта колонка нулевая).
 fn order_up_down(a: (PathBuf, FracTable), b: (PathBuf, FracTable)) -> ((PathBuf, FracTable), (PathBuf, FracTable)) {
-    let sum_up_a: f64 = a.1.rows.iter().map(|r| r.d_cm_up).sum();
-    let sum_up_b: f64 = b.1.rows.iter().map(|r| r.d_cm_up).sum();
+    let sum_up_a: f64 = a.1.rows.iter().map(|r| r.up).sum();
+    let sum_up_b: f64 = b.1.rows.iter().map(|r| r.up).sum();
 
     if sum_up_a >= sum_up_b {
         (a, b)
@@ -257,22 +309,27 @@ fn default_output_name(up_path: &Path, down_path: &Path) -> String {
 }
 
 pub fn run(config: &AppConfig) {
-    println!("Объединение данных датчиков (dCmup/dCmdown)");
+    println!("Объединение данных датчиков");
     println!("--------------------------------------------");
+
+    let quantity = match select_quantity() {
+        Some(q) => q,
+        None => return,
+    };
 
     let (path_a, path_b) = match select_two_files(config) {
         Some(v) => v,
         None => return,
     };
 
-    let table_a = match parse_table(&path_a) {
+    let table_a = match parse_table(&path_a, quantity) {
         Some(t) => t,
         None => {
             println!("Не удалось разобрать файл {}", path_a.display());
             return;
         }
     };
-    let table_b = match parse_table(&path_b) {
+    let table_b = match parse_table(&path_b, quantity) {
         Some(t) => t,
         None => {
             println!("Не удалось разобрать файл {}", path_b.display());
@@ -284,17 +341,21 @@ pub fn run(config: &AppConfig) {
         order_up_down((path_a, table_a), (path_b, table_b));
 
     println!(
-        "Определено автоматически: dCmup <- {}, dCmdown <- {}",
+        "Определено автоматически: {} <- {}, {} <- {}",
+        quantity.up_col(),
         up_path.file_name().unwrap_or_default().to_string_lossy(),
+        quantity.down_col(),
         down_path.file_name().unwrap_or_default().to_string_lossy(),
     );
 
     if up_table.rows.len() != down_table.rows.len() {
         println!(
-            "Разное число строк данных: {} (dCmup) = {}, {} (dCmdown) = {}",
+            "Разное число строк данных: {} ({}) = {}, {} ({}) = {}",
             up_path.display(),
+            quantity.up_col(),
             up_table.rows.len(),
             down_path.display(),
+            quantity.down_col(),
             down_table.rows.len()
         );
         return;
@@ -304,9 +365,11 @@ pub fn run(config: &AppConfig) {
     for (i, (u, d)) in up_table.rows.iter().zip(down_table.rows.iter()).enumerate() {
         if u.bin_key() != d.bin_key() {
             println!(
-                "Несовпадение границ канала в строке {}: dCmup=[{}] dCmdown=[{}]",
+                "Несовпадение границ канала в строке {}: {}=[{}] {}=[{}]",
                 i + 1,
+                quantity.up_col(),
                 u.bin_key(),
+                quantity.down_col(),
                 d.bin_key()
             );
             return;
@@ -316,8 +379,8 @@ pub fn run(config: &AppConfig) {
             x: u.x.clone(),
             xo: u.xo.clone(),
             dx: u.dx.clone(),
-            d_cm_up: u.d_cm_up,
-            d_cm_down: d.d_cm_down,
+            up: u.up,
+            down: d.down,
         });
     }
 
@@ -339,16 +402,19 @@ pub fn run(config: &AppConfig) {
         out.push_str("\r\n");
     }
     out.push_str(&format!(
-        "# sensor data merge: dCmup <- {}, dCmdown <- {}\r\n",
+        "# sensor data merge ({}): {} <- {}, {} <- {}\r\n",
+        quantity.label(),
+        quantity.up_col(),
         up_path.file_name().unwrap_or_default().to_string_lossy(),
+        quantity.down_col(),
         down_path.file_name().unwrap_or_default().to_string_lossy(),
     ));
 
     for row in &merged_rows {
-        let (p, e) = compute_p_e(row.d_cm_up, row.d_cm_down);
+        let (p, e) = compute_p_e(row.up, row.down);
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t \t{:.3}\t{:.3}\t \t{}\t{}\r\n",
-            row.xu, row.x, row.xo, row.dx, row.d_cm_up, row.d_cm_down, fmt_pct(p), fmt_pct(e),
+            row.xu, row.x, row.xo, row.dx, row.up, row.down, fmt_pct(p), fmt_pct(e),
         ));
     }
 
@@ -414,8 +480,8 @@ mod tests {
                 x: "0.328".into(),
                 xo: "0.340".into(),
                 dx: "0.024".into(),
-                d_cm_up: 1.0,
-                d_cm_down: 0.0,
+                up: 1.0,
+                down: 0.0,
             }],
         };
         let table_down = FracTable {
@@ -425,8 +491,8 @@ mod tests {
                 x: "0.328".into(),
                 xo: "0.340".into(),
                 dx: "0.024".into(),
-                d_cm_up: 0.0,
-                d_cm_down: 1.0,
+                up: 0.0,
+                down: 1.0,
             }],
         };
         let a = (PathBuf::from("down.txt"), table_down);
@@ -434,5 +500,13 @@ mod tests {
         let (up, down) = order_up_down(a, b);
         assert_eq!(up.0, PathBuf::from("up.txt"));
         assert_eq!(down.0, PathBuf::from("down.txt"));
+    }
+
+    #[test]
+    fn quantity_columns_mass_and_count() {
+        assert_eq!(Quantity::Mass.up_col(), "dCmup");
+        assert_eq!(Quantity::Mass.down_col(), "dCmdown");
+        assert_eq!(Quantity::Count.up_col(), "dCnup");
+        assert_eq!(Quantity::Count.down_col(), "dCndown");
     }
 }
