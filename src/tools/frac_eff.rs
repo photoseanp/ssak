@@ -172,7 +172,10 @@ fn parse_frac_eff_file(path: &Path, quantity: Quantity) -> Option<(Vec<f64>, Vec
         let size_val = fields[si].trim().replace(',', ".").parse::<f64>();
         let eff_val = fields[ei].trim().replace(',', ".").parse::<f64>();
         if let (Ok(s), Ok(e)) = (size_val, eff_val) {
-            if s > 0.0 {
+            // NaN в колонке E означает "измерение не определено" (см. compute_p_e
+            // в sensor_data_merge.rs) — такую точку нельзя наносить на график,
+            // иначе она попадает в диапазон осей и рвёт линию серии.
+            if s > 0.0 && !e.is_nan() {
                 sizes.push(s);
                 effs.push(e);
             }
