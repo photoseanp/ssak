@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn holder_resistance_matches_polynomial_at_reference_flow() {
-        let x = 1000.0;
+        let x: f64 = 1000.0;
         let expected = -6e-18 * x.powi(6) + 1e-13 * x.powi(5) - 7e-10 * x.powi(4)
             + 2e-6 * x.powi(3)
             - 0.0039 * x.powi(2)
