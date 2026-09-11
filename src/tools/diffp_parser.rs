@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::text_io::read_text_lossy;
-use dialoguer::{Input, Select};
+use dialoguer::{Confirm, Input, Select};
 use plotters::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -117,6 +117,17 @@ fn parse_diffp_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
     Some((flows, pressures))
 }
 
+/// Сопротивление потоку пустого фильтродержателя (без фильтроэлемента) —
+/// аппроксимация экспериментальной кривой полиномом 6-й степени по расходу
+/// x [л/мин]:
+/// y = -6e-18*x^6 + 1e-13*x^5 - 7e-10*x^4 + 2e-6*x^3 - 0.0039*x^2 + 3.9964*x - 483.45
+/// Возвращает сопротивление держателя [Pa] для данного расхода. Вычисляется
+/// схемой Горнера для устойчивости при больших степенях x.
+fn holder_resistance_pa(flow_lmin: f64) -> f64 {
+    let x = flow_lmin;
+    (((((-6e-18 * x + 1e-13) * x - 7e-10) * x + 2e-6) * x - 0.0039) * x + 3.9964) * x - 483.45
+}
+
 /// Линейная регрессия методом наименьших квадратов: y = slope*x + intercept.
 fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = x.len() as f64;
@@ -171,7 +182,7 @@ pub fn run(config: &AppConfig) {
         None => return,
     };
 
-    let (flows, pressures) = match parse_diffp_file(&input_path) {
+    let (flows, mut pressures) = match parse_diffp_file(&input_path) {
         Some(v) => v,
         None => {
             println!(
@@ -184,6 +195,19 @@ pub fn run(config: &AppConfig) {
     };
 
     println!("Обработано точек: {}", flows.len());
+
+    let subtract_holder = Confirm::new()
+        .with_prompt("Вычесть сопротивление фильтродержателя из измеренного перепада давления?")
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+
+    if subtract_holder {
+        for (p, f) in pressures.iter_mut().zip(flows.iter()) {
+            *p -= holder_resistance_pa(*f);
+        }
+        println!("Сопротивление фильтродержателя вычтено из всех точек (полином 6-й степени по расходу).");
+    }
 
     let default_label = input_path
         .file_stem()
@@ -334,4 +358,26 @@ fn plot_data(
 
     root.present()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holder_resistance_matches_polynomial_at_zero() {
+        // При x = 0 полином должен вернуть свободный член.
+        assert!((holder_resistance_pa(0.0) - (-483.45)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn holder_resistance_matches_polynomial_at_reference_flow() {
+        let x = 1000.0;
+        let expected = -6e-18 * x.powi(6) + 1e-13 * x.powi(5) - 7e-10 * x.powi(4)
+            + 2e-6 * x.powi(3)
+            - 0.0039 * x.powi(2)
+            + 3.9964 * x
+            - 483.45;
+        assert!((holder_resistance_pa(x) - expected).abs() < 1e-6);
+    }
 }
