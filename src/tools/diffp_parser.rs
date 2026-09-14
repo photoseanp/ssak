@@ -120,12 +120,12 @@ fn parse_diffp_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
 /// Сопротивление потоку пустого фильтродержателя (без фильтроэлемента) —
 /// аппроксимация экспериментальной кривой полиномом 6-й степени по расходу
 /// x [л/мин]:
-/// y = -6e-18*x^6 + 1e-13*x^5 - 7e-10*x^4 + 2e-6*x^3 - 0.0039*x^2 + 3.9964*x - 483.45
+/// y = -6e-18*x^6 + 7e-14*x^5 - 3e-10*x^4 + 5e-7*x^3 + 6e-5*x^2 + 0.1415*x + 174.57
 /// Возвращает сопротивление держателя [Pa] для данного расхода. Вычисляется
 /// схемой Горнера для устойчивости при больших степенях x.
 fn holder_resistance_pa(flow_lmin: f64) -> f64 {
     let x = flow_lmin;
-    (((((-6e-18 * x + 1e-13) * x - 7e-10) * x + 2e-6) * x - 0.0039) * x + 3.9964) * x - 483.45
+    (((((-6e-18 * x + 7e-14) * x - 3e-10) * x + 5e-7) * x + 6e-5) * x + 0.1415) * x + 174.57
 }
 
 /// Линейная регрессия методом наименьших квадратов: y = slope*x + intercept.
@@ -367,17 +367,17 @@ mod tests {
     #[test]
     fn holder_resistance_matches_polynomial_at_zero() {
         // При x = 0 полином должен вернуть свободный член.
-        assert!((holder_resistance_pa(0.0) - (-483.45)).abs() < 1e-9);
+        assert!((holder_resistance_pa(0.0) - 174.57).abs() < 1e-9);
     }
 
     #[test]
     fn holder_resistance_matches_polynomial_at_reference_flow() {
         let x: f64 = 1000.0;
-        let expected = -6e-18 * x.powi(6) + 1e-13 * x.powi(5) - 7e-10 * x.powi(4)
-            + 2e-6 * x.powi(3)
-            - 0.0039 * x.powi(2)
-            + 3.9964 * x
-            - 483.45;
+        let expected = -6e-18 * x.powi(6) + 7e-14 * x.powi(5) - 3e-10 * x.powi(4)
+            + 5e-7 * x.powi(3)
+            + 6e-5 * x.powi(2)
+            + 0.1415 * x
+            + 174.57;
         assert!((holder_resistance_pa(x) - expected).abs() < 1e-6);
     }
 }
