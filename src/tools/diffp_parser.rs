@@ -1,11 +1,50 @@
 use crate::config::AppConfig;
 use crate::text_io::read_text_lossy;
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, MultiSelect, Select};
 use plotters::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn select_input_file(config: &AppConfig) -> Option<PathBuf> {
+/// Режим сравнения нескольких файлов дифференциального давления между собой:
+/// по абсолютному расходу (без учёта площади фильтроэлемента) или по
+/// удельному расходу, приведённому к 1 м² фильтроэлемента.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompareMode {
+    Absolute,
+    PerSquareMeter,
+}
+
+impl CompareMode {
+    fn label(self) -> &'static str {
+        match self {
+            CompareMode::Absolute => {
+                "По абсолютному расходу (площадь фильтроэлементов не учитывается)"
+            }
+            CompareMode::PerSquareMeter => "По удельному расходу на 1 м² фильтроэлемента",
+        }
+    }
+}
+
+fn select_compare_mode() -> Option<CompareMode> {
+    let items = [CompareMode::Absolute.label(), CompareMode::PerSquareMeter.label()];
+    let selection = Select::new()
+        .with_prompt("Выбрано несколько файлов. Какой вид сравнения построить?")
+        .items(&items)
+        .default(0)
+        .interact()
+        .ok()?;
+
+    Some(if selection == 0 {
+        CompareMode::Absolute
+    } else {
+        CompareMode::PerSquareMeter
+    })
+}
+
+/// Выбор одного или нескольких файлов с данными (Space — выбрать, Enter —
+/// подтвердить). При выборе одного файла программа работает как раньше;
+/// при выборе нескольких — предлагается построить сравнительный график.
+fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
     let dir = Path::new(&config.input_dir);
 
     if !dir.exists() || !dir.is_dir() {
@@ -32,21 +71,19 @@ fn select_input_file(config: &AppConfig) -> Option<PathBuf> {
     }
 
     files.sort();
-    files.push("[Отмена — назад в меню]".to_string());
 
-    let selection = Select::new()
-        .with_prompt("Выберите файл с данными")
+    let selections = MultiSelect::new()
+        .with_prompt("Выберите один или несколько файлов с данными (Space — выбрать, Enter — подтвердить)")
         .items(&files)
-        .default(0)
         .interact()
         .ok()?;
 
-    if selection == files.len() - 1 {
-        println!("Отменено. Возврат в главное меню.");
+    if selections.is_empty() {
+        println!("Файлы не выбраны. Возврат в главное меню.");
         return None;
     }
 
-    Some(dir.join(&files[selection]))
+    Some(selections.into_iter().map(|i| dir.join(&files[i])).collect())
 }
 
 fn read_text_or_default(prompt: &str, default: &str) -> Option<String> {
@@ -177,12 +214,22 @@ pub fn run(config: &AppConfig) {
     println!("Парсер дифференциального давления");
     println!("------------------------------------");
 
-    let input_path = match select_input_file(config) {
+    let paths = match select_input_files(config) {
         Some(p) => p,
         None => return,
     };
 
-    let (flows, mut pressures) = match parse_diffp_file(&input_path) {
+    if paths.len() == 1 {
+        run_single(config, &paths[0]);
+    } else {
+        run_multi(config, &paths);
+    }
+}
+
+/// Работа с одним файлом — поведение полностью соответствует прежней версии
+/// инструмента (без изменений в логике).
+fn run_single(config: &AppConfig, input_path: &Path) {
+    let (flows, mut pressures) = match parse_diffp_file(input_path) {
         Some(v) => v,
         None => {
             println!(
@@ -275,6 +322,158 @@ pub fn run(config: &AppConfig) {
     println!("График сохранён: {}", output_path.display());
 }
 
+/// Сравнение нескольких файлов на одном графике: по абсолютному расходу или
+/// по удельному расходу на 1 м² фильтроэлемента (выбор режима — у пользователя).
+fn run_multi(config: &AppConfig, paths: &[PathBuf]) {
+    let mut parsed: Vec<(PathBuf, Vec<f64>, Vec<f64>)> = Vec::new();
+    for path in paths {
+        match parse_diffp_file(path) {
+            Some((flows, pressures)) => parsed.push((path.clone(), flows, pressures)),
+            None => println!(
+                "Не удалось найти данные дифференциального давления в файле {} — файл пропущен.",
+                path.display()
+            ),
+        }
+    }
+
+    if parsed.is_empty() {
+        println!("Не удалось обработать ни один из выбранных файлов.");
+        return;
+    }
+
+    let subtract_holder = Confirm::new()
+        .with_prompt("Вычесть сопротивление фильтродержателя из измеренного перепада давления во всех файлах?")
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+
+    if subtract_holder {
+        for (_, flows, pressures) in parsed.iter_mut() {
+            for (p, f) in pressures.iter_mut().zip(flows.iter()) {
+                *p -= holder_resistance_pa(*f);
+            }
+        }
+        println!("Сопротивление фильтродержателя вычтено из всех точек во всех файлах.");
+    }
+
+    let mode = match select_compare_mode() {
+        Some(m) => m,
+        None => return,
+    };
+
+    let mut series: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::new();
+    let x_desc: &str;
+
+    match mode {
+        CompareMode::Absolute => {
+            x_desc = "Flow (l/min)";
+            for (path, flows, pressures) in &parsed {
+                let default_label = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Series".to_string());
+                let prompt = format!(
+                    "Название для легенды (файл: {})",
+                    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                );
+                let label = match read_text_or_default(&prompt, &default_label) {
+                    Some(v) => v,
+                    None => {
+                        println!("Отменено. Возврат в главное меню.");
+                        return;
+                    }
+                };
+                series.push((label, flows.clone(), pressures.clone()));
+            }
+        }
+        CompareMode::PerSquareMeter => {
+            x_desc = "Specific flow (fm3/(m2*h))";
+            println!();
+            println!("Общие условия испытания для приведения расхода к 1 м²:");
+            let p_abs_bar: f64 = Input::new()
+                .with_prompt("Давление в контуре (бар, абс.)")
+                .default(1.01325)
+                .interact_text()
+                .unwrap_or(1.01325);
+
+            let temp_c: f64 = Input::new()
+                .with_prompt("температура в контуре (°C)")
+                .default(20.0)
+                .interact_text()
+                .unwrap_or(20.0);
+
+            if p_abs_bar <= 0.0 {
+                println!("Давление должно быть больше нуля. Отменено.");
+                return;
+            }
+
+            for (path, flows, pressures) in &parsed {
+                let default_label = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Series".to_string());
+                println!();
+                println!(
+                    "Файл: {}",
+                    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                );
+                let area_m2: f64 = Input::new()
+                    .with_prompt("площадь фильтроэлемента (м2)")
+                    .interact_text()
+                    .unwrap_or(0.0);
+                if area_m2 <= 0.0 {
+                    println!("Площадь должна быть больше нуля. Файл пропущен.");
+                    continue;
+                }
+                let label = match read_text_or_default("Название для легенды", &default_label) {
+                    Some(v) => v,
+                    None => {
+                        println!("Отменено. Возврат в главное меню.");
+                        return;
+                    }
+                };
+                let conv_factor = conv_factor_nlmin_to_fm3m2h(temp_c, p_abs_bar, area_m2);
+                let specific_flows: Vec<f64> = flows.iter().map(|f| f * conv_factor).collect();
+                series.push((label, specific_flows, pressures.clone()));
+            }
+        }
+    }
+
+    if series.is_empty() {
+        println!("Не удалось подготовить ни одной серии для графика.");
+        return;
+    }
+
+    let mut output_name = match read_text_or_default(
+        "Введите имя файла для сохранения графика (PNG)",
+        "diffp_compare_result.png",
+    ) {
+        Some(v) => v,
+        None => {
+            println!("Отменено. Возврат в главное меню.");
+            return;
+        }
+    };
+    if !output_name.to_lowercase().ends_with(".png") {
+        output_name.push_str(".png");
+    }
+
+    if let Err(e) = config.ensure_output_dir() {
+        println!("Не удалось создать папку для результатов: {}", e);
+        return;
+    }
+
+    let output_path = config.output_path(&output_name);
+    if let Err(e) = plot_compare(&series, x_desc, &output_path) {
+        println!("Ошибка построения графика: {}", e);
+        return;
+    }
+
+    println!();
+    println!("Обработано файлов: {}", series.len());
+    println!("График сохранён: {}", output_path.display());
+}
+
 fn plot_data(
     flows: &[f64],
     pressures: &[f64],
@@ -360,6 +559,78 @@ fn plot_data(
     Ok(())
 }
 
+/// Построение сравнительного графика нескольких серий (X — абсолютный или
+/// удельный расход в зависимости от выбранного режима, Y — перепад давления).
+fn plot_compare(
+    series: &[(String, Vec<f64>, Vec<f64>)],
+    x_desc: &str,
+    output_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new(output_path, (1100, 700)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let x_max = series
+        .iter()
+        .flat_map(|(_, x, _)| x.iter())
+        .cloned()
+        .fold(f64::MIN, f64::max)
+        .max(1.0);
+    let y_max = series
+        .iter()
+        .flat_map(|(_, _, y)| y.iter())
+        .cloned()
+        .fold(f64::MIN, f64::max);
+    let y_min = series
+        .iter()
+        .flat_map(|(_, _, y)| y.iter())
+        .cloned()
+        .fold(f64::MAX, f64::min)
+        .min(0.0);
+
+    let mut chart = ChartBuilder::on(&root)
+        .margin(20)
+        .x_label_area_size(45)
+        .y_label_area_size(70)
+        .build_cartesian_2d(0f64..x_max, y_min..y_max)?;
+
+    chart
+        .configure_mesh()
+        .x_desc(x_desc)
+        .y_desc("Differential Pressure (Pa)")
+        .x_label_formatter(&|v| format!("{:.0}", v))
+        .y_label_formatter(&|v| format!("{:.0}", v))
+        .draw()?;
+
+    let palette: [&RGBColor; 6] = [&RED, &BLUE, &GREEN, &MAGENTA, &CYAN, &BLACK];
+
+    for (i, (label, xs, ys)) in series.iter().enumerate() {
+        let color = palette[i % palette.len()];
+        chart
+            .draw_series(LineSeries::new(
+                xs.iter().zip(ys.iter()).map(|(x, y)| (*x, *y)),
+                color,
+            ))?
+            .label(label.clone())
+            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+
+        chart.draw_series(
+            xs.iter()
+                .zip(ys.iter())
+                .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
+        )?;
+    }
+
+    chart
+        .configure_series_labels()
+        .position(SeriesLabelPosition::LowerRight)
+        .background_style(&WHITE.mix(0.8))
+        .border_style(&BLACK)
+        .draw()?;
+
+    root.present()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +650,11 @@ mod tests {
             + 0.1415 * x
             + 174.57;
         assert!((holder_resistance_pa(x) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn conv_factor_is_positive_for_normal_conditions() {
+        let f = conv_factor_nlmin_to_fm3m2h(20.0, 1.01325, 0.01);
+        assert!(f > 0.0);
     }
 }
