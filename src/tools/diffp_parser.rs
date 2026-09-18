@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 /// Режим сравнения нескольких файлов дифференциального давления между собой:
 /// по абсолютному расходу (без учёта площади фильтроэлемента) или по
 /// удельному расходу, приведённому к 1 м² фильтроэлемента.
+///
+/// Подписи пунктов сознательно короткие (умещаются в одну строку терминала
+/// без переноса) — при длинных подписях, переносящихся на вторую строку,
+/// dialoguer::Select некорректно пересчитывает число строк для перерисовки
+/// при переключении между вариантами, из-за чего строки меню "прыгают" и
+/// частично стираются.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompareMode {
     Absolute,
@@ -17,10 +23,8 @@ enum CompareMode {
 impl CompareMode {
     fn label(self) -> &'static str {
         match self {
-            CompareMode::Absolute => {
-                "По абсолютному расходу (площадь фильтроэлементов не учитывается)"
-            }
-            CompareMode::PerSquareMeter => "По удельному расходу на 1 м² фильтроэлемента",
+            CompareMode::Absolute => "По абсолютному расходу (без площади ФЭ)",
+            CompareMode::PerSquareMeter => "По удельному расходу (на 1 м² ФЭ)",
         }
     }
 }
@@ -28,7 +32,7 @@ impl CompareMode {
 fn select_compare_mode() -> Option<CompareMode> {
     let items = [CompareMode::Absolute.label(), CompareMode::PerSquareMeter.label()];
     let selection = Select::new()
-        .with_prompt("Выбрано несколько файлов. Какой вид сравнения построить?")
+        .with_prompt("Выбрано несколько файлов. Вид сравнения")
         .items(&items)
         .default(0)
         .interact()
@@ -387,7 +391,7 @@ fn run_multi(config: &AppConfig, paths: &[PathBuf]) {
             }
         }
         CompareMode::PerSquareMeter => {
-            x_desc = "Specific flow (fm3/(m2*h))";
+            x_desc = "Flow (fm3/(m2*h))";
             println!();
             println!("Общие условия испытания для приведения расхода к 1 м²:");
             let p_abs_bar: f64 = Input::new()
@@ -474,6 +478,9 @@ fn run_multi(config: &AppConfig, paths: &[PathBuf]) {
     println!("График сохранён: {}", output_path.display());
 }
 
+/// График по одному файлу: точки измерения показаны только маркерами (без
+/// соединительных линий между ними), плюс линия линейного тренда (аппроксимация,
+/// не соединение точек) и вторичная ось в фм3/(м2*ч).
 fn plot_data(
     flows: &[f64],
     pressures: &[f64],
@@ -524,19 +531,14 @@ fn plot_data(
         .draw()?;
 
     chart
-        .draw_series(LineSeries::new(
-            flows.iter().zip(pressures.iter()).map(|(x, y)| (*x, *y)),
-            &RED,
-        ))?
+        .draw_series(
+            flows
+                .iter()
+                .zip(pressures.iter())
+                .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
+        )?
         .label(label)
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
-
-    chart.draw_series(
-        flows
-            .iter()
-            .zip(pressures.iter())
-            .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
-    )?;
 
     let trend_label = format!("y = {:.2}x + {:.2} (R2 = {:.4})", slope, intercept, r2);
 
@@ -561,6 +563,7 @@ fn plot_data(
 
 /// Построение сравнительного графика нескольких серий (X — абсолютный или
 /// удельный расход в зависимости от выбранного режима, Y — перепад давления).
+/// Точки измерения показаны только маркерами, без соединительных линий.
 fn plot_compare(
     series: &[(String, Vec<f64>, Vec<f64>)],
     x_desc: &str,
@@ -606,18 +609,13 @@ fn plot_compare(
     for (i, (label, xs, ys)) in series.iter().enumerate() {
         let color = palette[i % palette.len()];
         chart
-            .draw_series(LineSeries::new(
-                xs.iter().zip(ys.iter()).map(|(x, y)| (*x, *y)),
-                color,
-            ))?
+            .draw_series(
+                xs.iter()
+                    .zip(ys.iter())
+                    .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
+            )?
             .label(label.clone())
             .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
-
-        chart.draw_series(
-            xs.iter()
-                .zip(ys.iter())
-                .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
-        )?;
     }
 
     chart
