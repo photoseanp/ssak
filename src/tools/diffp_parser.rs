@@ -45,9 +45,6 @@ fn select_compare_mode() -> Option<CompareMode> {
     })
 }
 
-/// Выбор одного или нескольких файлов с данными (Space — выбрать, Enter —
-/// подтвердить). При выборе одного файла программа работает как раньше;
-/// при выборе нескольких — предлагается построить сравнительный график.
 fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
     let dir = Path::new(&config.input_dir);
 
@@ -230,8 +227,6 @@ pub fn run(config: &AppConfig) {
     }
 }
 
-/// Работа с одним файлом — поведение полностью соответствует прежней версии
-/// инструмента (без изменений в логике).
 fn run_single(config: &AppConfig, input_path: &Path) {
     let (flows, mut pressures) = match parse_diffp_file(input_path) {
         Some(v) => v,
@@ -326,8 +321,6 @@ fn run_single(config: &AppConfig, input_path: &Path) {
     println!("График сохранён: {}", output_path.display());
 }
 
-/// Сравнение нескольких файлов на одном графике: по абсолютному расходу или
-/// по удельному расходу на 1 м² фильтроэлемента (выбор режима — у пользователя).
 fn run_multi(config: &AppConfig, paths: &[PathBuf]) {
     let mut parsed: Vec<(PathBuf, Vec<f64>, Vec<f64>)> = Vec::new();
     for path in paths {
@@ -478,9 +471,6 @@ fn run_multi(config: &AppConfig, paths: &[PathBuf]) {
     println!("График сохранён: {}", output_path.display());
 }
 
-/// График по одному файлу: точки измерения показаны только маркерами (без
-/// соединительных линий между ними), плюс линия линейного тренда (аппроксимация,
-/// не соединение точек) и вторичная ось в фм3/(м2*ч).
 fn plot_data(
     flows: &[f64],
     pressures: &[f64],
@@ -531,14 +521,19 @@ fn plot_data(
         .draw()?;
 
     chart
-        .draw_series(
-            flows
-                .iter()
-                .zip(pressures.iter())
-                .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
-        )?
+        .draw_series(LineSeries::new(
+            flows.iter().zip(pressures.iter()).map(|(x, y)| (*x, *y)),
+            &RED,
+        ))?
         .label(label)
         .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+
+    chart.draw_series(
+        flows
+            .iter()
+            .zip(pressures.iter())
+            .map(|(x, y)| Circle::new((*x, *y), 3, RED.filled())),
+    )?;
 
     let trend_label = format!("y = {:.2}x + {:.2} (R2 = {:.4})", slope, intercept, r2);
 
@@ -561,9 +556,6 @@ fn plot_data(
     Ok(())
 }
 
-/// Построение сравнительного графика нескольких серий (X — абсолютный или
-/// удельный расход в зависимости от выбранного режима, Y — перепад давления).
-/// Точки измерения показаны только маркерами, без соединительных линий.
 fn plot_compare(
     series: &[(String, Vec<f64>, Vec<f64>)],
     x_desc: &str,
@@ -609,13 +601,18 @@ fn plot_compare(
     for (i, (label, xs, ys)) in series.iter().enumerate() {
         let color = palette[i % palette.len()];
         chart
-            .draw_series(
-                xs.iter()
-                    .zip(ys.iter())
-                    .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
-            )?
+            .draw_series(LineSeries::new(
+                xs.iter().zip(ys.iter()).map(|(x, y)| (*x, *y)),
+                color,
+            ))?
             .label(label.clone())
             .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+
+        chart.draw_series(
+            xs.iter()
+                .zip(ys.iter())
+                .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
+        )?;
     }
 
     chart
@@ -635,7 +632,6 @@ mod tests {
 
     #[test]
     fn holder_resistance_matches_polynomial_at_zero() {
-        // При x = 0 полином должен вернуть свободный член.
         assert!((holder_resistance_pa(0.0) - 174.57).abs() < 1e-9);
     }
 
