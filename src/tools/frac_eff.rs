@@ -5,10 +5,6 @@ use plotters::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Величина, по которой считается фракционная эффективность: массовая
-/// концентрация (dCmup/dCmdown) или счётная концентрация (dCnup/dCndown).
-/// Нужна, чтобы правильно выбрать колонку "E", если в файле присутствуют
-/// оба варианта таблицы (мода "по массе" и мода "по счёту") бок о бок.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Quantity {
     Mass,
@@ -110,9 +106,6 @@ fn find_col(fields: &[&str], target: &str) -> Option<usize> {
     })
 }
 
-/// Ищет колонку с именем `target`, начиная поиск с индекса `from` (включительно).
-/// Нужно, чтобы выбрать правильную колонку "E", когда в одной строке заголовка
-/// присутствуют сразу два блока (по массе и по счёту), каждый со своей "E".
 fn find_col_from(fields: &[&str], target: &str, from: usize) -> Option<usize> {
     fields.iter().enumerate().skip(from).find_map(|(i, f)| {
         let t = f.trim();
@@ -139,11 +132,6 @@ fn parse_frac_eff_file(path: &Path, quantity: Quantity) -> Option<(Vec<f64>, Vec
     for (i, line) in lines.iter().enumerate() {
         let fields: Vec<&str> = line.split('\t').collect();
         let si = find_col(&fields, "X");
-        // Если в таблице есть маркер выбранной величины (dCmup/dCnup),
-        // ищем "E" после него — это позволяет различить два блока
-        // (по массе и по счёту), если они присутствуют в одной строке.
-        // Если маркера нет (файл содержит только один вариант величины),
-        // используем первую попавшуюся колонку "E" — как раньше.
         let ei = match si.and_then(|s| find_col(&fields, quantity.up_col()).map(|m| (s, m))) {
             Some((_, marker)) => find_col_from(&fields, "E", marker),
             None => find_col(&fields, "E"),
@@ -172,9 +160,6 @@ fn parse_frac_eff_file(path: &Path, quantity: Quantity) -> Option<(Vec<f64>, Vec
         let size_val = fields[si].trim().replace(',', ".").parse::<f64>();
         let eff_val = fields[ei].trim().replace(',', ".").parse::<f64>();
         if let (Ok(s), Ok(e)) = (size_val, eff_val) {
-            // NaN в колонке E означает "измерение не определено" (см. compute_p_e
-            // в sensor_data_merge.rs) — такую точку нельзя наносить на график,
-            // иначе она попадает в диапазон осей и рвёт линию серии.
             if s > 0.0 && !e.is_nan() {
                 sizes.push(s);
                 effs.push(e);
@@ -269,6 +254,42 @@ pub fn run(config: &AppConfig) {
     println!("График сохранён: {}", output_path.display());
 }
 
+/// Качественная (категориальная) палитра из 10 визуально различимых цветов.
+/// В сочетании с 3 формами маркеров (см. `MarkerShape`) даёт 10*3 = 30
+/// уникальных комбинаций "цвет+форма", не повторяющихся при сравнении до
+/// 30 файлов одновременно (индексы 0..29 дают 30 разных пар, так как
+/// 10 и 3 взаимно просты — цикл по цвету и цикл по форме расходятся в фазе).
+const PALETTE: [(u8, u8, u8); 10] = [
+    (230, 25, 75),
+    (60, 180, 75),
+    (255, 196, 12),
+    (0, 130, 200),
+    (245, 130, 48),
+    (145, 30, 180),
+    (70, 240, 240),
+    (240, 50, 230),
+    (170, 110, 40),
+    (0, 0, 0),
+];
+
+fn palette_color(i: usize) -> RGBColor {
+    let (r, g, b) = PALETTE[i % PALETTE.len()];
+    RGBColor(r, g, b)
+}
+
+#[derive(Clone, Copy)]
+enum MarkerShape {
+    Circle,
+    Cross,
+    Triangle,
+}
+
+const MARKER_SHAPES: [MarkerShape; 3] = [MarkerShape::Circle, MarkerShape::Cross, MarkerShape::Triangle];
+
+fn marker_shape(i: usize) -> MarkerShape {
+    MARKER_SHAPES[i % MARKER_SHAPES.len()]
+}
+
 fn plot_data(
     series: &[(String, Vec<f64>, Vec<f64>)],
     output_path: &Path,
@@ -292,8 +313,6 @@ fn plot_data(
         .cloned()
         .fold(f64::MAX, f64::min);
 
-    // Мультипликативный отступ (лог. шкала), чтобы маркеры-круги (радиус 3px)
-    // и минор-грид лог. шкалы полностью поместились в рамке графика.
     let x_min = x_min_raw / 1.18;
     let x_max = x_max_raw * 1.05;
 
@@ -316,24 +335,27 @@ fn plot_data(
         .y_label_formatter(&|v| format!("{:.1}", v))
         .draw()?;
 
-    let palette: [&RGBColor; 6] = [&RED, &BLUE, &GREEN, &MAGENTA, &CYAN, &BLACK];
-
     for (i, (label, sizes, effs)) in series.iter().enumerate() {
-        let color = palette[i % palette.len()];
+        let color = palette_color(i);
+        let shape = marker_shape(i);
+        let points: Vec<(f64, f64)> = sizes.iter().zip(effs.iter()).map(|(x, y)| (*x, *y)).collect();
+
         chart
-            .draw_series(LineSeries::new(
-                sizes.iter().zip(effs.iter()).map(|(x, y)| (*x, *y)),
-                color,
-            ))?
+            .draw_series(LineSeries::new(points.iter().cloned(), &color))?
             .label(label.clone())
             .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
 
-        chart.draw_series(
-            sizes
-                .iter()
-                .zip(effs.iter())
-                .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
-        )?;
+        match shape {
+            MarkerShape::Circle => {
+                chart.draw_series(points.iter().map(|(x, y)| Circle::new((*x, *y), 3, color.filled())))?;
+            }
+            MarkerShape::Cross => {
+                chart.draw_series(points.iter().map(|(x, y)| Cross::new((*x, *y), 4, color.filled())))?;
+            }
+            MarkerShape::Triangle => {
+                chart.draw_series(points.iter().map(|(x, y)| TriangleMarker::new((*x, *y), 4, color.filled())))?;
+            }
+        }
     }
 
     chart

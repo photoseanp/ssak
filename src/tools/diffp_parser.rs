@@ -5,15 +5,6 @@ use plotters::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Режим сравнения нескольких файлов дифференциального давления между собой:
-/// по абсолютному расходу (без учёта площади фильтроэлемента) или по
-/// удельному расходу, приведённому к 1 м² фильтроэлемента.
-///
-/// Подписи пунктов сознательно короткие (умещаются в одну строку терминала
-/// без переноса) — при длинных подписях, переносящихся на вторую строку,
-/// dialoguer::Select некорректно пересчитывает число строк для перерисовки
-/// при переключении между вариантами, из-за чего строки меню "прыгают" и
-/// частично стираются.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompareMode {
     Absolute,
@@ -155,18 +146,11 @@ fn parse_diffp_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
     Some((flows, pressures))
 }
 
-/// Сопротивление потоку пустого фильтродержателя (без фильтроэлемента) —
-/// аппроксимация экспериментальной кривой полиномом 6-й степени по расходу
-/// x [л/мин]:
-/// y = -6e-18*x^6 + 7e-14*x^5 - 3e-10*x^4 + 5e-7*x^3 + 6e-5*x^2 + 0.1415*x + 174.57
-/// Возвращает сопротивление держателя [Pa] для данного расхода. Вычисляется
-/// схемой Горнера для устойчивости при больших степенях x.
 fn holder_resistance_pa(flow_lmin: f64) -> f64 {
     let x = flow_lmin;
     (((((-6e-18 * x + 7e-14) * x - 3e-10) * x + 5e-7) * x + 6e-5) * x + 0.1415) * x + 174.57
 }
 
-/// Линейная регрессия методом наименьших квадратов: y = slope*x + intercept.
 fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = x.len() as f64;
     let sum_x: f64 = x.iter().sum();
@@ -182,7 +166,6 @@ fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
     (slope, intercept)
 }
 
-/// Коэффициент детерминации R^2 для линейной регрессии.
 fn r_squared(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> f64 {
     let mean_y: f64 = y.iter().sum::<f64>() / y.len() as f64;
     let ss_tot: f64 = y.iter().map(|v| (v - mean_y).powi(2)).sum();
@@ -201,9 +184,6 @@ fn r_squared(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> f64 {
     }
 }
 
-/// Перевод нормальных л/мин -> фм3/(м2*ч) с учётом температуры, абс. давления
-/// в контуре и площади фильтроэлемента (порт из diffP_parser.py).
-/// Нормальные условия: T_std = 0°C (273.15 K), P_std = 1.01325 бар.
 fn conv_factor_nlmin_to_fm3m2h(temp_c: f64, p_abs_bar: f64, area_m2: f64) -> f64 {
     const T_STD: f64 = 273.15;
     const P_STD: f64 = 1.01325;
@@ -556,6 +536,37 @@ fn plot_data(
     Ok(())
 }
 
+const PALETTE: [(u8, u8, u8); 10] = [
+    (230, 25, 75),
+    (60, 180, 75),
+    (255, 196, 12),
+    (0, 130, 200),
+    (245, 130, 48),
+    (145, 30, 180),
+    (70, 240, 240),
+    (240, 50, 230),
+    (170, 110, 40),
+    (0, 0, 0),
+];
+
+fn palette_color(i: usize) -> RGBColor {
+    let (r, g, b) = PALETTE[i % PALETTE.len()];
+    RGBColor(r, g, b)
+}
+
+#[derive(Clone, Copy)]
+enum MarkerShape {
+    Circle,
+    Cross,
+    Triangle,
+}
+
+const MARKER_SHAPES: [MarkerShape; 3] = [MarkerShape::Circle, MarkerShape::Cross, MarkerShape::Triangle];
+
+fn marker_shape(i: usize) -> MarkerShape {
+    MARKER_SHAPES[i % MARKER_SHAPES.len()]
+}
+
 fn plot_compare(
     series: &[(String, Vec<f64>, Vec<f64>)],
     x_desc: &str,
@@ -596,23 +607,27 @@ fn plot_compare(
         .y_label_formatter(&|v| format!("{:.0}", v))
         .draw()?;
 
-    let palette: [&RGBColor; 6] = [&RED, &BLUE, &GREEN, &MAGENTA, &CYAN, &BLACK];
-
     for (i, (label, xs, ys)) in series.iter().enumerate() {
-        let color = palette[i % palette.len()];
+        let color = palette_color(i);
+        let shape = marker_shape(i);
+        let points: Vec<(f64, f64)> = xs.iter().zip(ys.iter()).map(|(x, y)| (*x, *y)).collect();
+
         chart
-            .draw_series(LineSeries::new(
-                xs.iter().zip(ys.iter()).map(|(x, y)| (*x, *y)),
-                color,
-            ))?
+            .draw_series(LineSeries::new(points.iter().cloned(), &color))?
             .label(label.clone())
             .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
 
-        chart.draw_series(
-            xs.iter()
-                .zip(ys.iter())
-                .map(|(x, y)| Circle::new((*x, *y), 3, color.filled())),
-        )?;
+        match shape {
+            MarkerShape::Circle => {
+                chart.draw_series(points.iter().map(|(x, y)| Circle::new((*x, *y), 3, color.filled())))?;
+            }
+            MarkerShape::Cross => {
+                chart.draw_series(points.iter().map(|(x, y)| Cross::new((*x, *y), 4, color.filled())))?;
+            }
+            MarkerShape::Triangle => {
+                chart.draw_series(points.iter().map(|(x, y)| TriangleMarker::new((*x, *y), 4, color.filled())))?;
+            }
+        }
     }
 
     chart
@@ -650,5 +665,16 @@ mod tests {
     fn conv_factor_is_positive_for_normal_conditions() {
         let f = conv_factor_nlmin_to_fm3m2h(20.0, 1.01325, 0.01);
         assert!(f > 0.0);
+    }
+
+    #[test]
+    fn palette_has_ten_distinct_colors() {
+        let colors: std::collections::HashSet<(u8, u8, u8)> = PALETTE.iter().cloned().collect();
+        assert_eq!(colors.len(), 10);
+    }
+
+    #[test]
+    fn palette_and_marker_cycle_lengths_give_30_combinations() {
+        assert_eq!(PALETTE.len() * MARKER_SHAPES.len(), 30);
     }
 }
