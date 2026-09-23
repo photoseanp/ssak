@@ -567,6 +567,12 @@ fn marker_shape(i: usize) -> MarkerShape {
     MARKER_SHAPES[i % MARKER_SHAPES.len()]
 }
 
+/// Построение сравнительного графика нескольких серий (X — абсолютный или
+/// удельный расход в зависимости от выбранного режима, Y — перепад давления).
+/// Точки измерения соединены линией своим цветом из палитры, плюс маркер
+/// своей формы (чередование цвета и формы маркера позволяет уверенно
+/// различать до 30 серий одновременно). Значок легенды показывает и цвет
+/// линии, и форму маркера серии, а не только цвет.
 fn plot_compare(
     series: &[(String, Vec<f64>, Vec<f64>)],
     x_desc: &str,
@@ -612,19 +618,35 @@ fn plot_compare(
         let shape = marker_shape(i);
         let points: Vec<(f64, f64)> = xs.iter().zip(ys.iter()).map(|(x, y)| (*x, *y)).collect();
 
-        chart
-            .draw_series(LineSeries::new(points.iter().cloned(), &color))?
-            .label(label.clone())
-            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
-
+        let series_anno = chart.draw_series(LineSeries::new(points.iter().cloned(), &color))?;
+        series_anno.label(label.clone());
+        // Значок легенды рисуем как линию + маркер той же формы, что и у точек
+        // данной серии — иначе при 30 сериях легенда, показывающая только
+        // цвет линии, не позволяла бы различить серии с одинаковым цветом,
+        // но разной формой маркера (см. аналогичный приём в frac_eff.rs).
         match shape {
             MarkerShape::Circle => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + Circle::new((10, 0), 3, color.filled())
+                });
                 chart.draw_series(points.iter().map(|(x, y)| Circle::new((*x, *y), 3, color.filled())))?;
             }
             MarkerShape::Cross => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + Cross::new((10, 0), 4, color.filled())
+                });
                 chart.draw_series(points.iter().map(|(x, y)| Cross::new((*x, *y), 4, color.filled())))?;
             }
             MarkerShape::Triangle => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + TriangleMarker::new((10, 0), 4, color.filled())
+                });
                 chart.draw_series(points.iter().map(|(x, y)| TriangleMarker::new((*x, *y), 4, color.filled())))?;
             }
         }

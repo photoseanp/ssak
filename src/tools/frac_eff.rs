@@ -277,6 +277,7 @@ fn palette_color(i: usize) -> RGBColor {
     RGBColor(r, g, b)
 }
 
+/// Форма маркера точки на графике: кружок, крест или треугольник.
 #[derive(Clone, Copy)]
 enum MarkerShape {
     Circle,
@@ -340,19 +341,38 @@ fn plot_data(
         let shape = marker_shape(i);
         let points: Vec<(f64, f64)> = sizes.iter().zip(effs.iter()).map(|(x, y)| (*x, *y)).collect();
 
-        chart
-            .draw_series(LineSeries::new(points.iter().cloned(), &color))?
-            .label(label.clone())
-            .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
-
+        let series_anno = chart.draw_series(LineSeries::new(points.iter().cloned(), &color))?;
+        series_anno.label(label.clone());
+        // Значок легенды рисуем как линию + маркер той же формы, что и у точек
+        // данной серии (EmptyElement::at задаёт точку отсчёта в пикселях, а
+        // дочерние элементы рисуются с координатами, заданными относительно
+        // неё), чтобы легенда однозначно ассоциировала цвет и форму маркера
+        // с конкретной серией — иначе при 30 сериях легенда, показывающая
+        // только цвет линии, не позволяла бы различить серии с одинаковым
+        // цветом, но разной формой маркера.
         match shape {
             MarkerShape::Circle => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + Circle::new((10, 0), 3, color.filled())
+                });
                 chart.draw_series(points.iter().map(|(x, y)| Circle::new((*x, *y), 3, color.filled())))?;
             }
             MarkerShape::Cross => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + Cross::new((10, 0), 4, color.filled())
+                });
                 chart.draw_series(points.iter().map(|(x, y)| Cross::new((*x, *y), 4, color.filled())))?;
             }
             MarkerShape::Triangle => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + TriangleMarker::new((10, 0), 4, color.filled())
+                });
                 chart.draw_series(points.iter().map(|(x, y)| TriangleMarker::new((*x, *y), 4, color.filled())))?;
             }
         }
