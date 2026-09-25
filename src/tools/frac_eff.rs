@@ -39,6 +39,38 @@ fn select_quantity() -> Option<Quantity> {
     Some(if selection == 0 { Quantity::Mass } else { Quantity::Count })
 }
 
+/// Режим шкалы оси Y (эффективность, %): обычная линейная шкала 0-100% или
+/// логарифмическая шкала "недосепарации" (100% - E), которая растягивает
+/// область высокой эффективности (90%, 99%, 99.9%, 99.99%) — так же, как на
+/// бумажных бланках сепарационной эффективности фильтров (см. образец с
+/// подписями "Complete separation" / "Vollständige Abscheidung" сверху).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum YScale {
+    Linear,
+    Logarithmic,
+}
+
+impl YScale {
+    fn label(self) -> &'static str {
+        match self {
+            YScale::Linear => "Обычная (линейная), 0-100%",
+            YScale::Logarithmic => "Логарифмическая (0% / 90% / 99% / 99.9% / 99.99%)",
+        }
+    }
+}
+
+fn select_y_scale() -> Option<YScale> {
+    let items = [YScale::Linear.label(), YScale::Logarithmic.label()];
+    let selection = Select::new()
+        .with_prompt("Выберите шкалу оси Y (эффективность)")
+        .items(&items)
+        .default(0)
+        .interact()
+        .ok()?;
+
+    Some(if selection == 0 { YScale::Linear } else { YScale::Logarithmic })
+}
+
 fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
     let dir = Path::new(&config.input_dir);
 
@@ -224,6 +256,14 @@ pub fn run(config: &AppConfig) {
         return;
     }
 
+    // Шкала оси Y выбирается после выбора и разбора входных файлов — так
+    // пользователь сначала видит, что файлы обработаны успешно, а затем
+    // решает, в каком виде представить график.
+    let y_scale = match select_y_scale() {
+        Some(s) => s,
+        None => return,
+    };
+
     let mut output_name = match read_text_or_default(
         "Введите имя файла для сохранения графика (PNG)",
         "frac_eff_result.png",
@@ -244,7 +284,11 @@ pub fn run(config: &AppConfig) {
     }
 
     let output_path = config.output_path(&output_name);
-    if let Err(e) = plot_data(&series, &output_path) {
+    let plot_result = match y_scale {
+        YScale::Linear => plot_data_linear(&series, &output_path),
+        YScale::Logarithmic => plot_data_log(&series, &output_path),
+    };
+    if let Err(e) = plot_result {
         println!("Ошибка построения графика: {}", e);
         return;
     }
@@ -291,7 +335,24 @@ fn marker_shape(i: usize) -> MarkerShape {
     MARKER_SHAPES[i % MARKER_SHAPES.len()]
 }
 
-fn plot_data(
+/// Форматирует значение эффективности (%) с точностью, растущей по мере
+/// приближения к 100% — так подписи совпадают с ключевыми точками шкалы
+/// логарифмического графика: 0%, 90%, 99%, 99.9%, 99.99%.
+fn format_eff_label(pct: f64) -> String {
+    if pct <= 0.0 {
+        "0%".to_string()
+    } else if pct < 99.0 {
+        format!("{:.0}%", pct)
+    } else if pct < 99.9 {
+        format!("{:.1}%", pct)
+    } else if pct <= 99.99 {
+        format!("{:.2}%", pct)
+    } else {
+        format!("{:.3}%", pct)
+    }
+}
+
+fn plot_data_linear(
     series: &[(String, Vec<f64>, Vec<f64>)],
     output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -344,12 +405,8 @@ fn plot_data(
         let series_anno = chart.draw_series(LineSeries::new(points.iter().cloned(), &color))?;
         series_anno.label(label.clone());
         // Значок легенды рисуем как линию + маркер той же формы, что и у точек
-        // данной серии (EmptyElement::at задаёт точку отсчёта в пикселях, а
-        // дочерние элементы рисуются с координатами, заданными относительно
-        // неё), чтобы легенда однозначно ассоциировала цвет и форму маркера
-        // с конкретной серией — иначе при 30 сериях легенда, показывающая
-        // только цвет линии, не позволяла бы различить серии с одинаковым
-        // цветом, но разной формой маркера.
+        // данной серии, чтобы легенда однозначно ассоциировала цвет и форму
+        // маркера с конкретной серией (важно при сравнении до 30 файлов).
         match shape {
             MarkerShape::Circle => {
                 series_anno.legend(move |(x, y)| {
@@ -387,4 +444,151 @@ fn plot_data(
 
     root.present()?;
     Ok(())
+}
+
+/// Логарифмический график сепарационной эффективности (аналог бумажных бланков
+/// вида "cumulative volumetric efficiency"): по оси Y откладывается не сама
+/// эффективность E [%], а "недосепарация" (100 - E) в логарифмическом
+/// масштабе. Это растягивает область высокой эффективности так, что 90%,
+/// 99%, 99.9% и 99.99% ложатся на равномерно расставленные горизонтальные
+/// линии, а верхняя граница графика (100 - E -> 0, недостижимо на лог.
+/// шкале) подписана как "100% / Complete separation" — по образцу эталонного
+/// бланка. Точка E >= 100% на графике невозможна физически и обрезается по
+/// минимально допустимому "недосепарации" 0.001% (т. е. 99.999%), чтобы
+/// избежать log(0).
+fn plot_data_log(
+    series: &[(String, Vec<f64>, Vec<f64>)],
+    output_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    const MIN_SHORTFALL: f64 = 0.001; // соответствует 99.999%, верхний предел шкалы
+    const MAX_SHORTFALL: f64 = 100.0; // соответствует 0%, нижняя граница шкалы
+
+    let root = BitMapBackend::new(output_path, (1100, 700)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let x_max_raw = series
+        .iter()
+        .flat_map(|(_, s, _)| s.iter())
+        .cloned()
+        .fold(f64::MIN, f64::max);
+    let x_min_raw = series
+        .iter()
+        .flat_map(|(_, s, _)| s.iter())
+        .cloned()
+        .fold(f64::MAX, f64::min);
+
+    let x_min = x_min_raw / 1.18;
+    let x_max = x_max_raw * 1.05;
+
+    let x_key_points: Vec<f64> = vec![
+        0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+        10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0,
+    ];
+
+    // Ключевые уровни эффективности, которые должны лечь на подписанные
+    // горизонтальные линии сетки: 0%, 90%, 99%, 99.9%, 99.99%.
+    let y_eff_key_points = [0.0f64, 90.0, 99.0, 99.9, 99.99];
+    let y_key_points: Vec<f64> = y_eff_key_points
+        .iter()
+        .map(|pct| (100.0 - pct).max(MIN_SHORTFALL))
+        .collect();
+
+    // Ось Y задана диапазоном "недосепарации" по убыванию: внизу графика
+    // 100.0 (соответствует 0% эффективности), вверху MIN_SHORTFALL
+    // (соответствует ~100% эффективности). Логарифмическая шкала плотнее
+    // всего растягивает область у верхней границы, где 100-E близко к нулю.
+    let mut chart = ChartBuilder::on(&root)
+        .margin(20)
+        .x_label_area_size(45)
+        .y_label_area_size(70)
+        .caption(
+            "Complete separation / Vollstandige Abscheidung",
+            ("sans-serif", 16),
+        )
+        .build_cartesian_2d(
+            (x_min..x_max).log_scale().with_key_points(x_key_points),
+            (MAX_SHORTFALL..MIN_SHORTFALL).log_scale().with_key_points(y_key_points),
+        )?;
+
+    chart
+        .configure_mesh()
+        .x_desc("Particle Size (um)")
+        .y_desc("Separation efficiency")
+        .x_label_formatter(&|v| format!("{:.1}", v))
+        .y_label_formatter(&|v| format_eff_label(100.0 - v))
+        .draw()?;
+
+    for (i, (label, sizes, effs)) in series.iter().enumerate() {
+        let color = palette_color(i);
+        let shape = marker_shape(i);
+        let points: Vec<(f64, f64)> = sizes
+            .iter()
+            .zip(effs.iter())
+            .map(|(x, y)| (*x, (100.0 - *y).clamp(MIN_SHORTFALL, MAX_SHORTFALL)))
+            .collect();
+
+        let series_anno = chart.draw_series(LineSeries::new(points.iter().cloned(), &color))?;
+        series_anno.label(label.clone());
+        match shape {
+            MarkerShape::Circle => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + Circle::new((10, 0), 3, color.filled())
+                });
+                chart.draw_series(points.iter().map(|(x, y)| Circle::new((*x, *y), 3, color.filled())))?;
+            }
+            MarkerShape::Cross => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + Cross::new((10, 0), 4, color.filled())
+                });
+                chart.draw_series(points.iter().map(|(x, y)| Cross::new((*x, *y), 4, color.filled())))?;
+            }
+            MarkerShape::Triangle => {
+                series_anno.legend(move |(x, y)| {
+                    EmptyElement::at((x, y))
+                        + PathElement::new(vec![(0, 0), (20, 0)], color)
+                        + TriangleMarker::new((10, 0), 4, color.filled())
+                });
+                chart.draw_series(points.iter().map(|(x, y)| TriangleMarker::new((*x, *y), 4, color.filled())))?;
+            }
+        }
+    }
+
+    chart
+        .configure_series_labels()
+        .position(SeriesLabelPosition::LowerRight)
+        .background_style(&WHITE.mix(0.8))
+        .border_style(&BLACK)
+        .draw()?;
+
+    root.present()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palette_has_ten_distinct_colors() {
+        let colors: std::collections::HashSet<(u8, u8, u8)> = PALETTE.iter().cloned().collect();
+        assert_eq!(colors.len(), 10);
+    }
+
+    #[test]
+    fn palette_and_marker_cycle_lengths_give_30_combinations() {
+        assert_eq!(PALETTE.len() * MARKER_SHAPES.len(), 30);
+    }
+
+    #[test]
+    fn format_eff_label_matches_expected_key_points() {
+        assert_eq!(format_eff_label(0.0), "0%");
+        assert_eq!(format_eff_label(90.0), "90%");
+        assert_eq!(format_eff_label(99.0), "99%");
+        assert_eq!(format_eff_label(99.9), "99.9%");
+        assert_eq!(format_eff_label(99.99), "99.99%");
+    }
 }
