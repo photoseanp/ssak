@@ -36,6 +36,50 @@ fn select_compare_mode() -> Option<CompareMode> {
     })
 }
 
+/// Тип держателя (стенда), сопротивление которого вычитается из измеренного
+/// перепада давления: у каждого типа своя калибровочная кривая.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HolderType {
+    Whole,
+    Sheet,
+}
+
+impl HolderType {
+    fn label(self) -> &'static str {
+        match self {
+            HolderType::Whole => "Держатель цельного фильтроэлемента",
+            HolderType::Sheet => "Держатель листового фильтроэлемента",
+        }
+    }
+}
+
+/// Спрашивает, нужно ли вычитать сопротивление стенда, и если да — какого
+/// держателя. Возвращает None, если вычитание не нужно (или ввод отменён).
+fn ask_holder_subtraction(prompt: &str) -> Option<HolderType> {
+    let subtract = Confirm::new()
+        .with_prompt(prompt)
+        .default(false)
+        .interact()
+        .unwrap_or(false);
+    if !subtract {
+        return None;
+    }
+
+    let items = [HolderType::Whole.label(), HolderType::Sheet.label()];
+    let selection = Select::new()
+        .with_prompt("Тип держателя")
+        .items(&items)
+        .default(0)
+        .interact()
+        .ok()?;
+
+    Some(if selection == 0 {
+        HolderType::Whole
+    } else {
+        HolderType::Sheet
+    })
+}
+
 fn select_input_files(config: &AppConfig) -> Option<Vec<PathBuf>> {
     let dir = Path::new(&config.input_dir);
 
@@ -146,9 +190,27 @@ fn parse_diffp_file(path: &Path) -> Option<(Vec<f64>, Vec<f64>)> {
     Some((flows, pressures))
 }
 
-fn holder_resistance_pa(flow_lmin: f64) -> f64 {
+/// Сопротивление держателя цельного фильтроэлемента [Pa] от расхода x [л/мин]:
+/// y = -6e-18*x^6 + 7e-14*x^5 - 3e-10*x^4 + 5e-7*x^3 + 6e-5*x^2 + 0.1415*x + 174.57
+/// Вычисляется схемой Горнера.
+fn holder_whole_pa(flow_lmin: f64) -> f64 {
     let x = flow_lmin;
     (((((-6e-18 * x + 7e-14) * x - 3e-10) * x + 5e-7) * x + 6e-5) * x + 0.1415) * x + 174.57
+}
+
+/// Сопротивление держателя листового фильтроэлемента [Pa] от расхода x [л/мин]:
+/// y = 7e-17*x^6 - 6e-13*x^5 + 2e-9*x^4 - 3e-6*x^3 + 0.002*x^2 - 0.3229*x + 195.58
+/// (коэффициенты округлены, как в аппроксимации Excel).
+fn holder_sheet_pa(flow_lmin: f64) -> f64 {
+    let x = flow_lmin;
+    (((((7e-17 * x - 6e-13) * x + 2e-9) * x - 3e-6) * x + 0.002) * x - 0.3229) * x + 195.58
+}
+
+fn holder_resistance_pa(kind: HolderType, flow_lmin: f64) -> f64 {
+    match kind {
+        HolderType::Whole => holder_whole_pa(flow_lmin),
+        HolderType::Sheet => holder_sheet_pa(flow_lmin),
+    }
 }
 
 fn linear_regression(x: &[f64], y: &[f64]) -> (f64, f64) {
@@ -222,17 +284,16 @@ fn run_single(config: &AppConfig, input_path: &Path) {
 
     println!("Обработано точек: {}", flows.len());
 
-    let subtract_holder = Confirm::new()
-        .with_prompt("Вычесть сопротивление фильтродержателя из измеренного перепада давления?")
-        .default(false)
-        .interact()
-        .unwrap_or(false);
-
-    if subtract_holder {
+    if let Some(kind) = ask_holder_subtraction(
+        "Вычесть сопротивление стенда (держателя) из измеренного перепада давления?",
+    ) {
         for (p, f) in pressures.iter_mut().zip(flows.iter()) {
-            *p -= holder_resistance_pa(*f);
+            *p -= holder_resistance_pa(kind, *f);
         }
-        println!("Сопротивление фильтродержателя вычтено из всех точек (полином 6-й степени по расходу).");
+        println!(
+            "Сопротивление стенда вычтено из всех точек ({}, полином 6-й степени по расходу).",
+            kind.label()
+        );
     }
 
     let default_label = input_path
@@ -318,19 +379,18 @@ fn run_multi(config: &AppConfig, paths: &[PathBuf]) {
         return;
     }
 
-    let subtract_holder = Confirm::new()
-        .with_prompt("Вычесть сопротивление фильтродержателя из измеренного перепада давления во всех файлах?")
-        .default(false)
-        .interact()
-        .unwrap_or(false);
-
-    if subtract_holder {
+    if let Some(kind) = ask_holder_subtraction(
+        "Вычесть сопротивление стенда (держателя) из измеренного перепада давления во всех файлах?",
+    ) {
         for (_, flows, pressures) in parsed.iter_mut() {
             for (p, f) in pressures.iter_mut().zip(flows.iter()) {
-                *p -= holder_resistance_pa(*f);
+                *p -= holder_resistance_pa(kind, *f);
             }
         }
-        println!("Сопротивление фильтродержателя вычтено из всех точек во всех файлах.");
+        println!(
+            "Сопротивление стенда вычтено из всех точек во всех файлах ({}).",
+            kind.label()
+        );
     }
 
     let mode = match select_compare_mode() {
@@ -620,10 +680,6 @@ fn plot_compare(
 
         let series_anno = chart.draw_series(LineSeries::new(points.iter().cloned(), &color))?;
         series_anno.label(label.clone());
-        // Значок легенды рисуем как линию + маркер той же формы, что и у точек
-        // данной серии — иначе при 30 сериях легенда, показывающая только
-        // цвет линии, не позволяла бы различить серии с одинаковым цветом,
-        // но разной формой маркера (см. аналогичный приём в frac_eff.rs).
         match shape {
             MarkerShape::Circle => {
                 series_anno.legend(move |(x, y)| {
@@ -668,19 +724,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn holder_resistance_matches_polynomial_at_zero() {
-        assert!((holder_resistance_pa(0.0) - 174.57).abs() < 1e-9);
+    fn holder_whole_matches_polynomial_at_zero() {
+        assert!((holder_resistance_pa(HolderType::Whole, 0.0) - 174.57).abs() < 1e-9);
     }
 
     #[test]
-    fn holder_resistance_matches_polynomial_at_reference_flow() {
+    fn holder_whole_matches_polynomial_at_reference_flow() {
         let x: f64 = 1000.0;
         let expected = -6e-18 * x.powi(6) + 7e-14 * x.powi(5) - 3e-10 * x.powi(4)
             + 5e-7 * x.powi(3)
             + 6e-5 * x.powi(2)
             + 0.1415 * x
             + 174.57;
-        assert!((holder_resistance_pa(x) - expected).abs() < 1e-6);
+        assert!((holder_resistance_pa(HolderType::Whole, x) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn holder_sheet_matches_polynomial_at_zero() {
+        assert!((holder_resistance_pa(HolderType::Sheet, 0.0) - 195.58).abs() < 1e-9);
+    }
+
+    #[test]
+    fn holder_sheet_matches_polynomial_at_reference_flow() {
+        let x: f64 = 1000.0;
+        let expected = 7e-17 * x.powi(6) - 6e-13 * x.powi(5) + 2e-9 * x.powi(4)
+            - 3e-6 * x.powi(3)
+            + 0.002 * x.powi(2)
+            - 0.3229 * x
+            + 195.58;
+        assert!((holder_resistance_pa(HolderType::Sheet, x) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn holder_labels_are_distinct() {
+        assert_ne!(HolderType::Whole.label(), HolderType::Sheet.label());
     }
 
     #[test]
